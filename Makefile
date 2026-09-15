@@ -24,6 +24,7 @@ SRCS = \
 	main.c \
 	boot/boot.c \
 	boot/cheats.c \
+	boot/hook_blob.c \
 	boot/cic.c \
 	boot/reboot.S \
 	flashcart/64drive/64drive_ll.c \

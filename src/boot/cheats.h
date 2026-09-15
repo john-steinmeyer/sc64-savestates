@@ -20,6 +20,6 @@
  * @param cheat_list A pointer to an array of cheats to be installed.
  * @return true if the cheats were successfully installed, false otherwise.
  */
-bool cheats_install(cic_type_t cic_type, uint32_t *cheat_list);
+bool cheats_install(cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads);
 
 #endif // CHEATS_H__

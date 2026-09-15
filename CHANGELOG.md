@@ -1,3 +1,117 @@
+# Save states (SummerCart64 fork)
+
+## 0.3.3-ss1.1 (2026-09-14)
+
+- **Nothing resident any more.** The routine now lives on the cartridge: a gate of a
+  few dozen instructions in the exception-vector page and a 16 KiB monitor in the
+  cartridge memory, run in place. A save or a load borrows the top 128 KiB of RAM
+  for its length and puts the game's bytes back, so games that use every byte of the
+  Expansion Pak work (Donkey Kong 64, Perfect Dark, Indiana Jones and the Infernal
+  Machine, Rush 2049). The "Hook Placement" option of the interim builds is gone;
+  the resident routine of the first release comes back only through the Slow motion
+  option below.
+- The **virtual Controller Pak** is answered by the monitor from the cartridge memory.
+  It is on by default for the games the menu's database marks as Controller Pak users
+  and off for the rest (a Rumble Pak in port 1 then works as usual); the per-ROM option
+  switches it either way. It answers as a Controller Pak does (the Rumble Pak's
+  detection area reads as zeros), and a transaction is served once, at the interrupt
+  that brings the PIF's answer, not twice; the four games that ran only with the pak
+  off in the sweep (Wetrix, Razor Freestyle Scooter, NASCAR 99, WCW Nitro) run with it
+  on now.
+- States hold all 8 MiB of RAM plus the RSP's memories and program counter (hook
+  v10; files are 16 KiB longer, and files from ss1.0 are made afresh at the game's
+  first boot). The game's clock is carried across a freeze; the displayed frame is
+  restored last on a load. The card mirror of a state includes the RSP's memories, so
+  a state loaded after a power cycle gets them from the card.
+- USB: the menu's file push (`send-file`) answers `push ok <bytes>` once the file is
+  closed on the card, and reads the whole payload into RAM before writing it (a slow
+  card write between two pieces of a payload made the cartridge drop the rest and the
+  menu wait for it for ever). A tool that pushes a file must wait for that line before
+  it powers the console off: the directory entry is written last, and a cut before it
+  leaves a 0-byte file, which the cart's bootloader "loads" without complaint and then
+  boots whatever the cartridge memory holds.
+- Boot fixes: games that unpack their code at boot (Mario Tennis, Excitebike 64)
+  get the watchpoint patch applied after the unpacking; the boot-time RDP kick no
+  longer leaves the RDP busy (Wave Race 64, Rayman 2 loads); hi-res titles get a
+  shorter panel instead of none.
+- **Slow motion** is a per-game option now (off by default): on, the routine stays
+  resident in the top 128 KiB of RAM as in the first release, and the panel's Game page
+  offers slow motion and frame step. Both placements share one slot layout, so the
+  option switches without losing states (a state saved with it on holds 7.75 MiB and
+  loads either way); games that use all of the Expansion Pak do not boot with it on.
+- GameShark codes keep the engine at its classic place at the top of RAM (as in the
+  stock menu); states and the pak ride along with it there.
+- The Slow motion option is remembered when switched on, and the Virtual Controller Pak
+  when switched off for a game the database marks as a pak user (both used to fall
+  back to their defaults at the next visit: the settings writer dropped the key).
+- Suspend's resume is armed like a held combo, so the routine is entered on a frame
+  with the RCP idle, and a try that finds no such frame is repeated every three
+  seconds for half a minute. It used to start on whatever frame the timer fell on and
+  give up after one try, which on a busy boot (Super Mario 64's logo) meant no resume
+  at all; the development build's own timing hid it.
+- A built-in list of titles the menu treats specially, by game code, with nothing to
+  set. Since 12 September the engine's watchpoint on the exception vector has covered
+  reads as well as writes (Indiana Jones copies the vector's words and chains to the
+  copy); Rare's boot does not survive it (the engine's handling of libultra's vector
+  write goes wrong there, in a way not yet understood), so Banjo-Kazooie and GoldenEye
+  007 boot with the watchpoint on writes only, as in the first release (`watch_reads=0`
+  in a ROM's ini does the same for any other title). GoldenEye 007 also gets the
+  cartridge routine with its ten scratch words moved from 0x010 to 0x2A8 in the
+  exception page: the game keeps its own TLB refill handler in the first 128 bytes of
+  that page, where the routine parks registers on every entry, and died at boot with
+  them over it. The virtual pak's stub would land there too, so it gets no virtual pak
+  (it has no Controller Pak use).
+- Known: Ocarina of Time probes port 1 for a Rumble Pak every few frames when any pak
+  answers and slows to a crawl with the virtual pak on; it is off for it by default (the
+  game has no Controller Pak use). Games that unpack their code at boot need a per-title
+  entry (three known without one).
+
+Tested on hardware from the PC: 298 games launched with save states and the virtual pak on, a save, a load and a look at the picture and the frame rate; 276 work. Not working: AeroGauge, All-Star Baseball 2000, All-Star Baseball 2001, All-Star Baseball 99, BattleTanx, BattleTanx: Global Assault, Cruis'n World, Jeremy McGrath Supercross 2000, Madden NFL 2002, Ms. Pac-Man: Maze Madness, NBA Jam 2000, NBA Jam 99, NFL QB Club 2001, NFL Quarterback Club 2000, NFL Quarterback Club 2001, NFL Quarterback Club 98, NFL Quarterback Club 99, NHL Breakaway 98, Power Rangers: Lightspeed Rescue, South Park: Chef's Luv Shack, WCW Backstage Assault, WCW Mayhem. Working only with the virtual pak switched off: Indiana Jones and the Infernal Machine.
+
+## 0.3.3-ss1.0 (2026-09-06)
+
+Based on N64FlashcartMenu V0.3.3.
+
+- Save states on N64 hardware, no PC: L + R + D-pad Up saves, L + R + D-pad Down
+  loads, L + R + Start opens a slot panel with time stamps and thumbnails. See
+  `docs/savestates.md`.
+- State files are format v2: header first, checksummed, the image length stated
+  in the header, written in a torn-safe order to the card (`docs/state-format.md`).
+  Later builds will keep reading them.
+- Slow motion and frame step from the panel's Game page (L or R): 1/2, 1/4, 1/8 or
+  Step (Z advances one frame), with the sound slowed to match (pitch down) or left
+  to stutter.
+- **Exit to menu** and **Suspend** on the panel's Game page: back to the SC64 menu
+  without the reset button, with everything pending written to the card first;
+  Suspend saves the slot with a resume mark and the next launch of the game loads
+  it by itself.
+- A per-ROM **Virtual Controller Pak**: the game sees a Controller Pak in port 1,
+  answered from a 32 KiB image and saved to `sd:/savestates/paks/`. The answers are
+  given from inside the game's own interrupt handler (four instructions of
+  libultra's SI acknowledge are patched at boot), which is what makes every
+  transfer land; games with another handler get a best-effort answer at the
+  interrupt.
+- A per-ROM **Save States** option in the ROM's options menu, stored as
+  `savestates_enabled` in the ROM's `.ini`, independent of **Use Cheats**.
+- States live in the cartridge memory above the ROM (7 slots for ROMs up to 8 MiB,
+  6 up to 16 MiB, 4 for 32 MiB, 3 for 40 MiB) and are mirrored to
+  `sd:/savestates/` so they survive power cycles.
+- Boot integration for the resident hook: engine placement in the exception-vector
+  page with a reinstall stub for games that clear RAM at boot, a boot patch for
+  games that disarm the engine's watchpoint (libultra 2.0K+), `osMemSize` set for
+  Expansion Pak games, and the cheat engine kept working alongside.
+- Fixes found on the way: the 6101 IPL3 patch offset (Star Fox 64 booted without
+  the engine), the `I_J` macro's unparenthesised argument, `.datel` code files
+  loaded at boot without a visit to the code editor, and "Clear RDRAM on boot"
+  honoured with cheats installed.
+
+Tested: Super Mario 64, Mario Kart 64, Star Fox 64, F-Zero X, Ocarina of Time,
+Super Smash Bros., GoldenEye 007, Banjo-Kazooie, Banjo-Tooie, Diddy Kong Racing,
+Kirby 64, Yoshi's Story, Mario Party, Wave Race 64, Paper Mario, Pokémon Stadium,
+Turok 2. Not working: Donkey Kong 64, Perfect Dark (they use all of the Expansion
+Pak).
+
+---
 # Release Notes
 
 - For the SummerCart64, use the `sc64menu.n64` file in the root of your SD card.

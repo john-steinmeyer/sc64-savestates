@@ -127,7 +127,7 @@ void boot (boot_params_t *params) {
         cpu_io_write(&ipl3_dst[i], io_read((uint32_t) (&ipl3_src[i])));
     }
 
-    bool cheats_installed = cheats_install(cic_type, params->cheat_list);
+    bool cheats_installed = cheats_install(cic_type, params->cheat_list, params->hook_blob, params->hook_size, params->boot_patches, params->boot_patch_count, params->hook_borrowed, params->watch_reads);
 
     register uint32_t clear_rdram asm ("s1");
     register uint32_t skip_rdram_reset asm ("a0");
@@ -137,7 +137,11 @@ void boot (boot_params_t *params) {
     register uint32_t cic_seed asm ("s6");
     register uint32_t version asm ("s7");
 
-    clear_rdram = params->clear_rdram && !cheats_installed;
+    // SC64SS: the per-ROM "clear RDRAM" option keeps working with cheats or
+    // save states installed. The clear covers the lower 4 MiB only; the patcher
+    // and the engine's temporary copy sit at 0x80700000 and 0x80710000 and the
+    // hook is fetched from the cart afterwards, so nothing of ours is lost.
+    clear_rdram = params->clear_rdram;
     skip_rdram_reset = cheats_installed;
     boot_device = (params->device_type & 0x01);
     tv_type = (params->tv_type & 0x03);

@@ -780,6 +780,15 @@ static void extract_rom_info (match_t *match, rom_header_t *rom_header, rom_info
     rom_info->meta.size_limit_exceeded = false;
 
     rom_info->settings.cheats_enabled = false;
+    rom_info->settings.savestates_enabled = false;
+    // SC64SS: the virtual Controller Pak is on by default for the games the database marks as
+    // Controller Pak users and off for the rest: a game with no pak use gains
+    // nothing from one, a Rumble Pak in port 1 keeps working, and a game that probes the
+    // port for a Rumble Pak every few frames when a pak answers (Ocarina of Time) is not
+    // slowed by it. The per-ROM option switches it either way.
+    rom_info->settings.vpak_enabled = rom_info->features.controller_pak;
+    rom_info->settings.hook_borrowed = true;     // SC64SS: the default placement (Slow motion off)
+    rom_info->settings.watch_reads = true;       // SC64SS: the vector's reads watched too (Indiana Jones needs it)
     rom_info->settings.patches_enabled = false;
     rom_info->settings.clear_rdram_enabled = false;
 }
@@ -1182,6 +1191,10 @@ static void load_rom_config_from_file (path_t *path, rom_info_t *rom_info) {
     if (rom_config_ini) {
         // general
         rom_info->settings.cheats_enabled = ini_get_bool(rom_config_ini, "", "cheats_enabled", false);
+        rom_info->settings.savestates_enabled = ini_get_bool(rom_config_ini, "", "savestates_enabled", false);
+        rom_info->settings.vpak_enabled = ini_get_bool(rom_config_ini, "", "vpak_enabled", rom_info->features.controller_pak);   // SC64SS: the database's word unless the ini says
+        rom_info->settings.hook_borrowed = ini_get_bool(rom_config_ini, "", "hook_borrowed", true);
+        rom_info->settings.watch_reads = ini_get_bool(rom_config_ini, "", "watch_reads", true);
         rom_info->settings.patches_enabled = ini_get_bool(rom_config_ini, "", "patches_enabled", false);
         rom_info->settings.clear_rdram_enabled = ini_get_bool(rom_config_ini, "", "clear_rdram_enabled", false);
         
@@ -1322,6 +1335,27 @@ rom_err_t rom_config_override_tv_type (path_t *path, rom_info_t *rom_info, rom_t
 rom_err_t rom_config_setting_set_cheats (path_t *path, rom_info_t *rom_info, bool enabled) {
     rom_info->settings.cheats_enabled = enabled;
     return save_rom_config_setting_to_file(path, "", "cheats_enabled", enabled, false);
+}
+
+rom_err_t rom_config_setting_set_savestates (path_t *path, rom_info_t *rom_info, bool enabled) {
+    rom_info->settings.savestates_enabled = enabled;
+    return save_rom_config_setting_to_file(path, "", "savestates_enabled", enabled, false);
+}
+
+rom_err_t rom_config_setting_set_vpak (path_t *path, rom_info_t *rom_info, bool enabled) {
+    rom_info->settings.vpak_enabled = enabled;
+    // SC64SS: the key goes when the choice is the database's own (the loader's default), so
+    // switching the pak off for a game the database marks as a pak user is kept as
+    // vpak_enabled = 0 (with a default of false here, "off" was deleted and came back "on")
+    return save_rom_config_setting_to_file(path, "", "vpak_enabled", enabled, rom_info->features.controller_pak);
+}
+
+rom_err_t rom_config_setting_set_hook_borrowed (path_t *path, rom_info_t *rom_info, bool enabled) {
+    rom_info->settings.hook_borrowed = enabled;
+    // SC64SS: the loader's default is true (Slow motion off): the key is written when the
+    // option is on (hook_borrowed = 0) and deleted when it is off (with a default of false
+    // here, "on" was deleted and the option never stuck)
+    return save_rom_config_setting_to_file(path, "", "hook_borrowed", enabled, true);
 }
 
 rom_err_t rom_config_setting_set_clear_rdram (path_t *path, rom_info_t *rom_info, bool enabled) {

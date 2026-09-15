@@ -161,6 +161,10 @@ typedef struct {
 
     struct {
         bool cheats_enabled;        /**< Cheats enabled */
+        bool savestates_enabled;    /**< SC64SS: save states enabled (off by default: slot files) */
+        bool vpak_enabled;          /**< SC64SS: a virtual Controller Pak in port 1 (on by default) */
+        bool hook_borrowed;         /**< SC64SS: the borrowed-RAM engine (the default); false = the resident hook, the Slow motion option (slots and files share one layout, so it switches freely) */
+        bool watch_reads;           /**< SC64SS: the engine's watchpoint covers reads of the vector at 0x180 too (on by default; a built-in list and watch_reads=0 in the ini switch it off for titles whose own reads of the vector must not be redirected) */
         bool patches_enabled;       /**< Patches enabled */
         bool clear_rdram_enabled;   /**< Zero RDRAM before boot (workaround for ROMs with incomplete BSS init) */
     } settings;                     /**< The ROM settings */
@@ -267,6 +271,22 @@ rom_err_t rom_config_override_tv_type(path_t *path, rom_info_t *rom_info, rom_tv
  * @return rom_err_t Error code
  */
 rom_err_t rom_config_setting_set_cheats (path_t *path, rom_info_t *rom_info, bool enabled);
+
+/**
+ * @brief SC64SS: set the save-states setting for the ROM.
+ *
+ * @param path Pointer to the path structure
+ * @param rom_info Pointer to the ROM information structure
+ * @param enabled True to boot the ROM with the save-state hook, false to disable
+ * @return rom_err_t Error code
+ */
+rom_err_t rom_config_setting_set_savestates (path_t *path, rom_info_t *rom_info, bool enabled);
+
+/**
+ * @brief SC64SS: set the virtual Controller Pak setting for the ROM.
+ */
+rom_err_t rom_config_setting_set_vpak (path_t *path, rom_info_t *rom_info, bool enabled);
+rom_err_t rom_config_setting_set_hook_borrowed (path_t *path, rom_info_t *rom_info, bool enabled);
 
 /**
  * @brief Set whether RDRAM should be zeroed before booting this ROM.

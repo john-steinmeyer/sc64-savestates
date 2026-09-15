@@ -51,6 +51,12 @@ static void menu_init (boot_params_t *boot_params) {
     assert(menu != NULL);
 
     menu->boot_params = boot_params;
+    menu->boot_params->hook_blob = NULL;
+    menu->boot_params->hook_size = 0;
+    menu->boot_params->hook_borrowed = false;
+    menu->boot_params->watch_reads = true;
+    menu->boot_params->boot_patches = NULL;
+    menu->boot_params->boot_patch_count = 0;
 
     menu->mode = MENU_MODE_NONE;
     menu->next_mode = MENU_MODE_STARTUP;
@@ -58,6 +64,18 @@ static void menu_init (boot_params_t *boot_params) {
     menu->flashcart_err = flashcart_init(&menu->storage_prefix);
     if (menu->flashcart_err != FLASHCART_OK) {
         menu->next_mode = MENU_MODE_FAULT;
+    }
+
+    // SC64SS: post-mortem. The first kilobyte of RDRAM survives a reset (the IPL3s
+    // clear everything above it), so the vector page a hung game left behind is
+    // copied into the cart buffer at +0x1400, where a PC can read it over USB.
+    if (menu->flashcart_err == FLASHCART_OK) {
+        static uint32_t sc64ss_lowpage[0x100] __attribute__((aligned(16)));
+        for (uint32_t i = 0; i < 0x100; i++) {
+            sc64ss_lowpage[i] = *(volatile uint32_t *)(0xA0000000UL + 4 * i);
+        }
+        data_cache_hit_writeback(sc64ss_lowpage, sizeof(sc64ss_lowpage));
+        dma_write(sc64ss_lowpage, 0x1FFE1400UL, sizeof(sc64ss_lowpage));
     }
 
     joypad_init();

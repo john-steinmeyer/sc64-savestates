@@ -9,12 +9,14 @@
 //       (for example replace files on the SD card or reboot menu).
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <usb.h>
 
 #include "sound.h"
 #include "usb_comm.h"
+#include "utils/fs.h"
 #include "utils/utils.h"
 
 #define MAX_FILE_SIZE   MiB(4)
@@ -115,12 +117,15 @@ static void command_receive_file (menu_t *menu) {
     uint8_t data[8192];
     char length[8];
 
-    if (usb_comm_read_string(buffer, sizeof(buffer), ' ')) {
+    if (usb_comm_read_string(buffer, sizeof(buffer), '@')) {
         return usb_comm_send_error("Invalid path argument\n");
     }
 
-    if (usb_comm_get_char() != '@') {
-        return usb_comm_send_error("Invalid argument\n");
+    // NOTE: The path is terminated by '@' (not space) so filenames containing
+    //       spaces work; trailing spaces are trimmed to keep senders that emit
+    //       "send-file <path> @<len>@<data>" compatible.
+    for (size_t n = strlen(buffer); (n > 0) && (buffer[n - 1] == ' '); n--) {
+        buffer[n - 1] = '\0';
     }
 
     if (usb_comm_read_string(length, sizeof(length), '@')) {
@@ -137,19 +142,41 @@ static void command_receive_file (menu_t *menu) {
     path_free(path);
 
     int remaining = atoi(length);
+    int total = remaining;
 
     if (remaining > MAX_FILE_SIZE) {
+        fclose(f);
         return usb_comm_send_error("File size too big\n");
     }
 
-    while (remaining > 0) {
-        int block_size = MIN(remaining, sizeof(data));
-        usb_read(data, block_size);
-        if (fwrite(data, 1, block_size, f) != block_size) {
+    // SC64SS: the whole payload comes into RAM first and goes to the card in one write.
+    // The cartridge drops the rest of a payload when the console takes more than a second
+    // between two pieces of it, and a card write can take that long (the first write after
+    // a boot took seven seconds for 256 KiB one afternoon); the stock loop, which wrote each
+    // 8 KiB piece before asking for the next, then hung in usb_read for data that was gone.
+    uint8_t *whole = (remaining > 0) ? malloc(remaining) : NULL;
+    if (whole != NULL) {
+        for (int offset = 0; offset < total; ) {
+            int block_size = MIN(total - offset, (int) sizeof(data));
+            usb_read(whole + offset, block_size);
+            offset += block_size;
+        }
+        bool written = (fwrite(whole, 1, total, f) == (size_t) total);
+        free(whole);
+        if (!written) {
             fclose(f);
             return usb_comm_send_error("Couldn't write all required data to the file\n");
         }
-        remaining -= block_size;
+    } else {
+        while (remaining > 0) {
+            int block_size = MIN(remaining, sizeof(data));
+            usb_read(data, block_size);
+            if (fwrite(data, 1, block_size, f) != block_size) {
+                fclose(f);
+                return usb_comm_send_error("Couldn't write all required data to the file\n");
+            }
+            remaining -= block_size;
+        }
     }
 
     if (fclose(f)) {
@@ -159,11 +186,52 @@ static void command_receive_file (menu_t *menu) {
     if (usb_comm_get_char() != '\0') {
         return usb_comm_send_error("Invalid token at the end of data stream\n");
     }
+
+    // SC64SS: the sender waits for this line before it does anything else to the console:
+    // the file is closed on the card only now, and a power cycle before this point leaves
+    // a 0-byte file behind (it happened to the menu file itself).
+    char done[48];
+    snprintf(done, sizeof(done), "push ok %d\n", total);
+    usb_write(DATATYPE_TEXT, done, strlen(done));
+}
+
+// SC64SS: driving the menu from a PC over USB.
+// "ping" answers "pong": the menu is up and serving USB.
+static void command_ping (menu_t *menu) {
+    usb_write(DATATYPE_TEXT, "pong\n", 5);
+}
+
+// "load-rom <path>@": boot the ROM at that path on the card with the settings saved for
+// it (save states, hook placement, cheats), without a press of A, the way the autoload
+// feature boots at startup. The path ends at '@' so names with spaces work.
+extern void view_load_rom_preset (menu_t *menu, path_t *path);
+
+static void command_load_rom (menu_t *menu) {
+    char buffer[256];
+
+    if (usb_comm_read_string(buffer, sizeof(buffer), '@')) {
+        return usb_comm_send_error("Invalid path argument\n");
+    }
+    for (size_t n = strlen(buffer); (n > 0) && (buffer[n - 1] == ' '); n--) {
+        buffer[n - 1] = '\0';
+    }
+
+    path_t *path = path_init(menu->storage_prefix, buffer);
+
+    if (!file_exists(path_get(path))) {
+        path_free(path);
+        return usb_comm_send_error("No such file\n");
+    }
+
+    view_load_rom_preset(menu, path);
+    usb_write(DATATYPE_TEXT, "loading\n", 8);
 }
 
 static usb_comm_command_t commands[] = {
     { .id = "reboot", .op = command_reboot },
     { .id = "send-file", .op = command_receive_file }, // Note that this is a crossover with the `id` related to the PC commands.
+    { .id = "ping", .op = command_ping },
+    { .id = "load-rom", .op = command_load_rom },
     { .id = NULL },
 };
 

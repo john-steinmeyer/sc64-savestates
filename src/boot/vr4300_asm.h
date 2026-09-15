@@ -394,7 +394,7 @@ typedef enum {
 #define I_BNEL(rs, rt, offset) __ASM_I_INST(OP_BNEL, rs, rt, offset)
 #define I_CACHE(op, offset, base) __ASM_I_INST(OP_CACHE, base, op, offset)
 #define I_ERET() __ASM_C_INST(OP_COP0, 1, C0_FUNCT_ERET)
-#define I_J(target) __ASM_J_INST(OP_J, (target >> 2))
+#define I_J(target) __ASM_J_INST(OP_J, ((target) >> 2))
 #define I_JR(rs) __ASM_R_INST(OP_SPECIAL, rs, REG_ZERO, REG_ZERO, 0, FUNCT_JR)
 #define I_LBU(rt, offset, base) __ASM_I_INST(OP_LBU, base, rt, offset)
 #define I_LHU(rt, offset, base) __ASM_I_INST(OP_LHU, base, rt, offset)

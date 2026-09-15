@@ -37,7 +37,13 @@ typedef struct {
     uint8_t cic_seed; /**< CIC seed */
     bool detect_cic_seed; /**< Flag to detect CIC seed */
     uint32_t *cheat_list; /**< Pointer to the cheat list */
+    const uint32_t *hook_blob; /**< SC64SS USB hook blob (word array) or NULL */
+    uint32_t hook_size; /**< SC64SS USB hook blob size in bytes */
     bool clear_rdram; /**< Zero RDRAM before handing off to IPL3 */
+    const uint32_t *boot_patches; /**< SC64SS: (RAM address, word) pairs the boot patcher stores after IPL3, or NULL */
+    uint32_t boot_patch_count; /**< SC64SS: number of pairs */
+    bool hook_borrowed; /**< SC64SS: borrowed-RAM mode: no resident hook; the vector-page gate and the cart monitor borrow its home per action */
+    bool watch_reads; /**< SC64SS: the engine's watchpoint fires on reads of the vector at 0x180 too (false for titles whose own reads must not be redirected) */
 } boot_params_t;
 
 /**
