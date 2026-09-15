@@ -160,10 +160,10 @@ Controller Pak and does not try to rumble it.
 
 ## Compatibility
 
-Every game below was launched from the PC with save states and the virtual pak on, then
-given a save, a load, and a look at the picture and the frame rate before and after;
-the ones marked as tried by hand also had the combos, the panel, and loads across level
-and scene changes. The virtual pak was on for every game in this pass; in the release it
+I ran every game below the same way: launched it with save states and the virtual
+pak on, saved, loaded, and compared the picture and the frame rate before and after.
+Some I also played by hand, with the combos, the panel and loads across level and
+scene changes. The virtual pak was on for every game in this pass; in the release it
 is on by default only for the games the database marks as Controller Pak users (a game
 that probes port 1 for a Rumble Pak every few frames, Ocarina of Time for one, slows down
 badly when any pak answers, and gains nothing from one). Two games
@@ -227,7 +227,7 @@ handler too; the game has no Controller Pak use).
 | Cruis'n Exotica | works |  |
 | Cruis'n USA | works |  |
 | Cruis'n World | does not work | a save or a load hangs the game |
-| CyberTiger | works | the picture could not be checked from the PC (its screen mode); save and load ran |
+| CyberTiger | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
 | Dark Rift | works |  |
 | Deadly Arts | works |  |
 | Destruction Derby 64 | works |  |
@@ -278,7 +278,7 @@ handler too; the game has no Controller Pak use).
 | Hydro Thunder | works |  |
 | Iggy's Reckin' Balls | works |  |
 | In-Fisherman: Bass Hunter 64 | works |  |
-| Indiana Jones and the Infernal Machine | works | switch the Virtual Controller Pak off for this game (it fails with it on); the picture could not be checked from the PC (its screen mode); save and load ran |
+| Indiana Jones and the Infernal Machine | works | turn Virtual Controller Pak off for this game (it fails with it on) |
 | Indy Racing 2000 | works |  |
 | International Superstar Soccer '98 | works |  |
 | International Superstar Soccer 2000 | works |  |
@@ -289,7 +289,7 @@ handler too; the game has no Controller Pak use).
 | Jet Force Gemini | works |  |
 | John Romero's Daikatana | works |  |
 | Ken Griffey Jr.'s Slugfest | works |  |
-| Killer Instinct Gold | works | the picture could not be checked from the PC (its screen mode); save and load ran |
+| Killer Instinct Gold | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
 | Kirby 64: The Crystal Shards | works |  |
 | Knife Edge: Nose Gunner | works |  |
 | Knockout Kings 2000 | works |  |
@@ -312,7 +312,7 @@ handler too; the game has no Controller Pak use).
 | Mario Party 3 | works |  |
 | Mario Tennis | works |  |
 | Mega Man 64 | works |  |
-| Mia Hamm Soccer 64 | works | the picture could not be checked from the PC (its screen mode); save and load ran |
+| Mia Hamm Soccer 64 | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
 | Mickey's Speedway USA | works |  |
 | Micro Machines 64 Turbo | works |  |
 | Midway's Greatest Arcade Hits Volume 1 | works |  |
@@ -452,7 +452,7 @@ handler too; the game has no Controller Pak use).
 | Twisted Edge Extreme Snowboarding | works |  |
 | V-Rally Edition 99 | works |  |
 | Vigilante 8 | works |  |
-| Vigilante 8: 2nd Offense | works | the picture could not be checked from the PC (its screen mode); save and load ran |
+| Vigilante 8: 2nd Offense | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
 | Virtual Chess 64 | works |  |
 | Virtual Pool 64 | works |  |
 | VNES64 + Test Cart | works |  |
