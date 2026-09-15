@@ -6,13 +6,15 @@ console. A state is the whole machine: every byte of RAM, the CPU and coprocesso
 registers, the pending interrupts, the video timing, the RSP's memories and the
 game's own clock. Load one and the game continues from that exact frame.
 
-Nothing like this existed on the N64 before. The FXPak Pro and EverDrive N8 Pro do
-it on the SNES and NES with a resident routine that makes the console copy its own
-memory to the cartridge; this is the same idea on a machine that never had it, with
-one twist: nothing stays resident in the console's memory. The routine lives on the
-cartridge and borrows a corner of RAM only for the length of each save or load, so
-games that use every byte of the Expansion Pak (Donkey Kong 64, Perfect Dark,
-Indiana Jones) work too.
+The N64 has had save states before, but built into single games: the practice
+ROMs for Ocarina of Time, Majora's Mask and Super Mario 64 patch their game and
+save what that game's engine needs. This is the other approach, the one the
+FXPak Pro and EverDrive N8 Pro take on the SNES and NES: the cartridge saves the
+whole machine, so it is not tied to any one game and runs the unmodified ROM.
+With one twist: nothing stays resident in the console's memory. The routine lives
+on the cartridge and borrows a corner of RAM only for the length of each save or
+load, so games that use every byte of the Expansion Pak (Donkey Kong 64, Perfect
+Dark, Indiana Jones) work too.
 
 It also gives games that use one a **virtual Controller Pak**, so games that save to
 a pak save to the SD card whether or not a pak is plugged in, and it keeps the first
