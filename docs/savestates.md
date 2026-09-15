@@ -196,9 +196,9 @@ handler too; the game has no Controller Pak use).
 | Batman Beyond: Return of the Joker | works |  |
 | BattleTanx | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
 | BattleTanx: Global Assault | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
-| Battlezone: Rise of the Black Dogs | works | the loaded screen needed a Start press to move |
+| Battlezone: Rise of the Black Dogs | works |  |
 | Beast Wars Transmetal | works |  |
-| Beetle Adventure Racing! | works | the loaded screen needed a Start press to move |
+| Beetle Adventure Racing! | works |  |
 | Big Mountain 2000 | works |  |
 | Bio F.R.E.A.K.S. | works |  |
 | Blast Corps | works |  |
@@ -215,9 +215,9 @@ handler too; the game has no Controller Pak use).
 | Carmageddon 64 | works |  |
 | Castlevania | works |  |
 | Castlevania: Legacy of Darkness | works |  |
-| Chameleon Twist | works | the loaded screen needed a Start press to move |
+| Chameleon Twist | works |  |
 | Chameleon Twist 2 | works |  |
-| Charlie Blast's Territory | works | the loaded screen needed a Start press to move |
+| Charlie Blast's Territory | works |  |
 | Chopper Attack | works |  |
 | Clay Fighter 63 1-3 | works |  |
 | Clay Fighter: Sculptor's Cut | works |  |
@@ -245,12 +245,12 @@ handler too; the game has no Controller Pak use).
 | Earthworm Jim 3D | works |  |
 | ECW Hardcore Revolution | works |  |
 | Elmo's Letter Adventure | works |  |
-| Excitebike 64 | works | the loaded screen needed a Start press to move |
+| Excitebike 64 | works |  |
 | Extreme-G | works |  |
 | F-1 World Grand Prix | works |  |
 | F-Zero X | works |  |
-| F1 Pole Position 64 | works | the loaded screen needed a Start press to move |
-| FIFA 99 | works | the loaded screen needed a Start press to move |
+| F1 Pole Position 64 | works |  |
+| FIFA 99 | works |  |
 | FIFA Soccer 64 | works |  |
 | FIFA: Road to World Cup 98 | works |  |
 | Fighter's Destiny 2 | works |  |
@@ -270,9 +270,9 @@ handler too; the game has no Controller Pak use).
 | GoldenEye 007 | works | the menu gives it the cartridge routine with its scratch words moved (the game keeps its own TLB handler where they usually go) and no virtual pak; the game has no Controller Pak use |
 | GT64: Championship Edition | works |  |
 | Harvest Moon 64 | works |  |
-| Hercules: The Legendary Journeys | works | the loaded screen needed a Start press to move |
+| Hercules: The Legendary Journeys | works |  |
 | Hexen | works |  |
-| Hey You, Pikachu! | works | the loaded screen needed a Start press to move |
+| Hey You, Pikachu! | works |  |
 | Hot Wheels Turbo Racing | works |  |
 | Hybrid Heaven | works |  |
 | Hydro Thunder | works |  |
@@ -287,7 +287,7 @@ handler too; the game has no Controller Pak use).
 | Jeopardy! | works |  |
 | Jeremy McGrath Supercross 2000 | does not work | black screen at boot with the engine in place |
 | Jet Force Gemini | works |  |
-| John Romero's Daikatana | works | the loaded screen needed a Start press to move |
+| John Romero's Daikatana | works |  |
 | Ken Griffey Jr.'s Slugfest | works |  |
 | Killer Instinct Gold | works | the picture could not be checked from the PC (its screen mode); save and load ran |
 | Kirby 64: The Crystal Shards | works |  |
@@ -300,7 +300,7 @@ handler too; the game has no Controller Pak use).
 | Mace: The Dark Age | works |  |
 | Madden Football 64 | works |  |
 | Madden NFL 2000 | works |  |
-| Madden NFL 2001 | works | the loaded screen needed a Start press to move |
+| Madden NFL 2001 | works |  |
 | Madden NFL 2002 | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
 | Madden NFL 99 | works |  |
 | Magical Tetris Challenge | works |  |
@@ -326,7 +326,7 @@ handler too; the game has no Controller Pak use).
 | Monster Truck Madness 64 | works |  |
 | Mortal Kombat 4 | works |  |
 | Mortal Kombat Mythologies: Sub-Zero | works |  |
-| Mortal Kombat Trilogy | works | the loaded screen needed a Start press to move |
+| Mortal Kombat Trilogy | works |  |
 | MRC: Multi Racing Championship | works |  |
 | Ms. Pac-Man: Maze Madness | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
 | Mystical Ninja Starring Goemon | works |  |
@@ -334,7 +334,7 @@ handler too; the game has no Controller Pak use).
 | Nagano Winter Olympics '98 | works |  |
 | Namco Museum 64 | works |  |
 | NASCAR 2000 | works |  |
-| NASCAR 99 | works | the loaded screen needed a Start press to move |
+| NASCAR 99 | works |  |
 | NBA Courtside 2 featuring Kobe Bryant | works |  |
 | NBA Hangtime | works |  |
 | NBA in the Zone '98 | works |  |
@@ -381,16 +381,16 @@ handler too; the game has no Controller Pak use).
 | Quake 64 | works |  |
 | Quake II | works |  |
 | Quest 64 | works |  |
-| Racing Simulation | works | the loaded screen needed a Start press to move |
+| Racing Simulation | works |  |
 | RAINBOW SIX | works |  |
 | RALLY CHALLENGE | works |  |
 | Rally Challenge 2000 | works |  |
-| Rampage 2: Universal Tour | works | the loaded screen needed a Start press to move |
-| Rampage: World Tour | works | the loaded screen needed a Start press to move |
+| Rampage 2: Universal Tour | works |  |
+| Rampage: World Tour | works |  |
 | Rat Attack! | works |  |
-| Rayman 2: The Great Escape | works | the loaded screen needed a Start press to move |
+| Rayman 2: The Great Escape | works |  |
 | Razor Freestyle Scooter | works |  |
-| Re-Volt | works | the loaded screen needed a Start press to move |
+| Re-Volt | works |  |
 | Ready 2 Rumble Boxing | works |  |
 | Resident Evil 2 | works | 64 MiB ROM: boots as in the stock menu, no states, no pak |
 | Road Rash 64 | works |  |
@@ -399,7 +399,7 @@ handler too; the game has no Controller Pak use).
 | Robotron 64 | works |  |
 | Rocket: Robot on Wheels | works |  |
 | RR64: Ridge Racer 64 | works |  |
-| Rugrats in Paris: The Movie | works | the loaded screen needed a Start press to move |
+| Rugrats in Paris: The Movie | works |  |
 | Rugrats: Scavenger Hunt | works |  |
 | Rush 2: Extreme Racing USA | works |  |
 | S.C.A.R.S. | works |  |
@@ -414,7 +414,7 @@ handler too; the game has no Controller Pak use).
 | South Park | works |  |
 | South Park Rally | works |  |
 | South Park: Chef's Luv Shack | does not work | black screen at boot with the engine in place |
-| Space Invaders | works | the loaded screen needed a Start press to move |
+| Space Invaders | works |  |
 | Spacestation Silicon Valley | works |  |
 | Spider-Man | works |  |
 | Star Fox 64 | works |  |
@@ -430,7 +430,7 @@ handler too; the game has no Controller Pak use).
 | Super Mario 64 | works |  |
 | Super Smash Bros. | works |  |
 | Supercross 2000 | works |  |
-| Superman | works | the loaded screen needed a Start press to move |
+| Superman | works |  |
 | Tetrisphere | works |  |
 | The New Tetris | works |  |
 | Tigger's Honey Hunt | works |  |
@@ -445,7 +445,7 @@ handler too; the game has no Controller Pak use).
 | Top Gear Rally 2 | works |  |
 | Toy Story 2 | works |  |
 | Transformers: Beast Wars Transmetal | works |  |
-| Triple Play 2000 | works | the loaded screen needed a Start press to move |
+| Triple Play 2000 | works |  |
 | Turok 2: Seeds of Evil | works |  |
 | Turok: Dinosaur Hunter | works |  |
 | Turok: Rage Wars | works |  |
@@ -455,7 +455,7 @@ handler too; the game has no Controller Pak use).
 | Vigilante 8: 2nd Offense | works | the picture could not be checked from the PC (its screen mode); save and load ran |
 | Virtual Chess 64 | works |  |
 | Virtual Pool 64 | works |  |
-| VNES64 + Test Cart | works | the loaded screen needed a Start press to move |
+| VNES64 + Test Cart | works |  |
 | Waialae Country Club: True Golf Classics | works |  |
 | War Gods | works |  |
 | Wave Race 64 | works |  |
