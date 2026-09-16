@@ -497,7 +497,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 } else {
                     if (speed_div == SPEED_STEP) {
                         ov_text(&s, x0 + 8u * sc, y0 + 92u * sc, "TAP Z FOR ONE FRAME", grey);
-                        ov_text(&s, x0 + 8u * sc, y0 + 102u * sc, "L+R+START FOR THIS PANEL", grey);
+                        ov_text(&s, x0 + 8u * sc, y0 + 102u * sc, "R+Z+START FOR THIS PANEL", grey);
                     } else if (speed_div > 1u) {
                         ov_text(&s, x0 + 8u * sc, y0 + 92u * sc, slow_sound ? "SOUND PLAYS WITH GAPS" : "SOUND SLOWED WITH THE GAME", grey);
                     } else if (grow == 2u) {

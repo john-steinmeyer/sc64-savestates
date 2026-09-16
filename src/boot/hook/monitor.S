@@ -307,7 +307,7 @@ mon_tick:
     addiu   $t1, $t1, 1
     sw      $t1, D_SIOK($k0)
     # a fully held combo is cleared from the game's block (as the resident hook does):
-    # no pause under L+R+Start, no menu moves under L+R+D-pad. mt_parse left a0 = the
+    # no pause under R+Z+Start, no menu moves under L+R+D-pad. mt_parse left a0 = the
     # block and t0 = channel 0's entry; the buttons are its bytes 3 and 4.
     lui     $t1, %hi(CFG_ADDR)
     addiu   $t1, $t1, %lo(CFG_ADDR)

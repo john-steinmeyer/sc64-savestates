@@ -1438,7 +1438,7 @@ struct hook_cfg {
 struct hook_cfg hook_cfg __attribute__((aligned(16))) = {
     CFG_MAGIC, 7u, {0x10800000u, 0x10FC8000u, 0x11790000u, 0x11F58000u, 0x12720000u, 0x12EE8000u, 0x136B0000u, 0u},
     0x0830u /* L + R + D-pad up */, 0x0430u /* L + R + D-pad down */, 12u, 1u, 0u, 0u, {0},
-    0x1030u /* L + R + Start */, 0u, 1u, 0u, {0u, 0u, 0u, 0u}, 0u, 0u, 0u, 0u, 0u, {0u, 0u, 0u}};
+    0x3010u /* R + Z + Start */, 0u, 1u, 0u, {0u, 0u, 0u, 0u}, 0u, 0u, 0u, 0u, 0u, {0u, 0u, 0u}};
 #define CFG_WORDS       40u
 _Static_assert(sizeof(struct hook_cfg) == CFG_WORDS * 4u, "CFG_WORDS");
 /* monitor.S reads these fields from the staged copy by offset */
@@ -2594,7 +2594,7 @@ static void pif_poll_block_send(void) {
  * every game frame shown div times. Count is rolled back over the hold, so the
  * game's clock runs slow with it. The game makes less audio than the console
  * plays during a hold, so the sound stutters; that is the price. STEP holds
- * until Z is tapped (hidden from the game by pad_si_tick) or L+R+Start asks for
+ * until Z is tapped (hidden from the game by pad_si_tick) or R+Z+Start asks for
  * the panel. Never during a queued state operation or a running mirror. */
 /* The sound of slow motion: the game makes one audio buffer per div fields, the AI
  * plays one per field, so either the sound has gaps or the AI is slowed with the

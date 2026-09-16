@@ -78,7 +78,7 @@ the stock menu, and the states and the pak ride along with it.
 | --- | --- |
 | L + R + D-pad Up | Save the current slot |
 | L + R + D-pad Down | Load the current slot |
-| L + R + Start | Open the slot panel |
+| R + Z + Start | Open the slot panel |
 
 The game freezes for about two seconds on a save and about a second and a half on a
 load, then carries on. "STATE SAVED" or "STATE LOADED" shows for a moment in the
