@@ -8,7 +8,7 @@ suspend and resume, on the console.
 This fork adds, for the SummerCart64:
 
 - **Save states.** Hold L + R + D-pad Up in a game to save, L + R + D-pad Down to
-  load, L + R + Start for a slot panel with thumbnails; states persist on the SD card.
+  load, R + Z + Start for a slot panel with thumbnails; states persist on the SD card.
   Nothing stays resident in the console's memory, so games that use the whole
   Expansion Pak work too.
 - **A virtual Controller Pak (memory pak).** A game that uses one gets a pak that lives
