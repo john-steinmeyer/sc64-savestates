@@ -1,6 +1,6 @@
 # Save states for the SummerCart64 (N64FlashcartMenu fork)
 
-A fork of [N64FlashcartMenu](https://github.com/Polprzewodnikowy/N64FlashcartMenu) by
+A fork of [N64FlashcartMenu](https://github.com/Polprzewodnikowy/N64FlashcartMenu) 0.3.4 by
 Polprzewodnikowy (AGPL-3.0) with save states, a virtual Controller Pak, slow motion,
 screenshots and configurable hotkeys for the SummerCart64. Everything the stock menu
 does, it still does. Problems with the additions belong in this repository's issues,
@@ -12,6 +12,11 @@ not upstream's.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
+New in 1.3: saves move between a game's virtual Controller Pak and a real one from the
+menu, single notes or whole paks; the port list shows what each port holds and keeps the
+virtual pak out of a port with a real pak in it; a screenshot fix; the 0.3.4 base. The
+[changelog](CHANGELOG.md) has the details.
+
 What it adds:
 
 - Save states. Hold L + R + D-pad Up in a game to save, L + R + D-pad Down to load,
@@ -22,6 +27,8 @@ What it adds:
   card, whether or not a real one is plugged in. On by default for the games known
   to use one, in the port you pick, and it can be pulled out and put back from the
   panel mid-game, for games that want a Rumble Pak in that port at other times.
+  Saves move between it and a real Controller Pak from the menu, single notes or
+  whole paks, with the real pak backed up first.
 - Suspend and resume. Suspend a game to a slot, switch the console off, and the
   next launch of that game picks up where you left it.
 - Slow motion and frame step, per game.
@@ -29,7 +36,7 @@ What it adds:
 - Configurable hotkeys, for every game or per game.
 - Homebrew too. Games built with libdragon get save states as well.
 
-It needs an Expansion Pak. 276 of the 298 games I've tried work:
+It needs an Expansion Pak. 280 of the 298 games I've tried work:
 [the compatibility list](docs/savestates.md#compatibility).
 
 ![A state loaded from the slot panel](docs/media/preview.gif)

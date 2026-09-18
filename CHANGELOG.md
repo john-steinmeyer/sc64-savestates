@@ -1,5 +1,32 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.3 (2026-09-18)
+
+- Built on N64FlashcartMenu 0.3.4. Its one change resets the video registers
+  before a game boots, which fixed crashes in Ocarina of Time upstream. A ROM
+  built with libdragon skips that reset: it sets its video up from the vblank
+  interrupt, which never comes with the timings zeroed, and FlappyBird stayed
+  on a blank screen.
+- Saves move between a game's virtual Controller Pak and a real one from the
+  menu: single notes either way, or whole paks, from any port. Start in the
+  browser, Virtual Controller Paks, or a game's options, Virtual Controller Pak,
+  Manage saves. The real pak's contents are backed up to `sd:/cpak_saves` before
+  it is first changed. Asked for by Tom Scro on Discord.
+- The Virtual Controller Pak's port list shows what is plugged into each port,
+  live, and refuses a port holding a real Controller Pak; a launch with one in the
+  virtual pak's port is refused as well, since the game's writes would land in the
+  real pak too. With 1.2 that launch went ahead: a pak game played with the
+  virtual pak on port 1 and a real Controller Pak in port 1 could leave its writes
+  in the real pak. A Rumble Pak there is noted and allowed: the panel can pull the
+  virtual pak out when the game wants the rumble.
+- The screenshot button could kill the game's sound, or the game, when its tap fell
+  on the instant a cartridge read of the game's own had just finished: the copy of
+  the picture swallowed that completion, and whatever waited for it waited for
+  good. A few quick taps in a row found that instant before long. A screenshot is
+  taken at the same kind of moment as a save now.
+- AeroGauge, BattleTanx, BattleTanx: Global Assault and Cruis'n World work; the
+  compatibility list said otherwise. 280 of 298 now.
+
 ## 0.3.3-ss1.2 (2026-09-17)
 
 - The slot panel opens with R + Z + Start now. L + R + Start never worked on an
@@ -196,6 +223,33 @@ Pak).
 ### Current known Issues
 - Fast Rebooting a 64DD disk once will result in a blank screen. Twice will return to menu. This is expected until disk swapping is fully implemented.
 - Some users have reported crashes in Zelda OOT (anti-piracy checks). Menu V0.2.0 works as expected.
+- PixelFX HDMI mods may need to be updated to latest FW to support display.
+
+### Deprecation notices
+- None.
+
+## Release Notes 2026-09-12 - Tagged 0.3.4
+
+- **New Features**
+	- ~~Browser now allows hiding files and folders with hidden attributes set (thanks [Xeroxxx](https://github.com/Xeroxxx)).~~ Awaiting performance enhancement.
+
+- **Bug Fixes**
+	- Fix potential crashes in Zelda OOT, The boot function now resets the VI (mainly H-Sync) registers to fix the issue.
+
+- **Documentation**
+
+- **Refactor**
+
+- **Other**
+
+### Breaking changes
+- None.
+
+### Notes
+- None.
+
+### Current known Issues
+- Fast Rebooting a 64DD disk once will result in a blank screen. Twice will return to menu. This is expected until disk swapping is fully implemented.
 - PixelFX HDMI mods may need to be updated to latest FW to support display.
 
 ### Deprecation notices

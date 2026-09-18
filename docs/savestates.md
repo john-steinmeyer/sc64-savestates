@@ -20,7 +20,7 @@ It also gives games that use one a **virtual Controller Pak**, so games that sav
 a pak save to the SD card whether or not a pak is plugged in, and it keeps the first
 release's slow motion and frame step as a per-game option.
 
-I've tested 298 games so far; 276 work (see
+I've tested 298 games so far; 280 work (see
 [Compatibility](#compatibility)).
 
 ## What you need
@@ -72,8 +72,10 @@ cost: games that use every byte of the Expansion Pak have no room for the routin
 never boot with it on. The menu refuses the option for the ones it knows about (Donkey
 Kong 64, Perfect Dark, Indiana Jones and the Infernal Machine, San Francisco Rush 2049)
 and launches them on the cartridge engine whatever their `.ini` says. If a game not on
-that list shows a black screen with it on, switch it off. Stored as `hook_borrowed=0`
-in the ROM's `.ini`.
+that list shows a black screen with it on, switch it off. The same goes for a game's
+optional high-resolution mode, which uses the extra memory: Castlevania: Legacy of
+Darkness boots in low resolution with the option on, and not in high. Stored as
+`hook_borrowed=0` in the ROM's `.ini`.
 
 **Hotkeys and Screenshot** opens a page where the quick save, quick load, panel and
 frame step buttons can be set for this game, and a screenshot button chosen (see
@@ -176,8 +178,10 @@ carried over.)
 With a screenshot button set for a game (the **Hotkeys and Screenshot** page; there is
 none unless you pick one), a tap of it writes the picture on screen to the SD card as
 a PNG. The game holds still for a tenth of a second (about half a second in 640x480
-modes). With Slow motion on, "SCREENSHOT SAVED" shows for a moment; either way the
-cartridge LED blinks while the file is written, and you can keep playing meanwhile.
+modes), taken at the same kind of moment as a save; a game that offers none within two
+seconds gets "SCREENSHOT FAILED" instead. With Slow motion on, "SCREENSHOT SAVED" shows
+for a moment; either way the cartridge LED blinks while the file is written, and you can
+keep playing meanwhile.
 The game never sees the button, so pick one it does not use, and one no combo uses
 (the page refuses the others).
 
@@ -226,7 +230,9 @@ in a game not listed below, that is the likely reason.
 
 While it is in a port, a real Controller Pak or Rumble Pak in that port is not seen by
 the game, since the cartridge answers first, and a real Controller Pak there would
-take the game's writes as well, so leave that slot empty. The other ports are the
+take the game's writes as well, so the port list shows what each port holds and
+refuses one with a Controller Pak in it, and the launch refuses too until the pak is
+out or the virtual pak moved. The other ports are the
 game's as usual: a Rumble Pak in port 1 with the virtual pak in port 2, say, works in
 a game that takes a Controller Pak in any port (Perfect Dark). A game that wants both
 in the same port at different times (Beetle Adventure Racing asks for a Controller
@@ -235,6 +241,34 @@ pak out when the game asks for the Rumble Pak, put it back when it asks for the
 Controller Pak. The virtual pak answers as a Controller Pak does (reads in the Rumble
 Pak's detection area come back as zeros), so a game that supports both takes it for
 a Controller Pak and does not try to rumble it.
+
+### Moving saves to and from a real Controller Pak
+
+The menu moves single notes between a game's virtual pak and a real Controller
+Pak in any port, or clones a whole pak either way. Press Start in the file browser
+and choose **Virtual Controller Paks** for the list of every game's pak on the card,
+or open a game's options, **Virtual Controller Pak**, **Manage saves** for that
+game's pak alone (this works before the game has ever run with the option on). The
+pak screen shows the notes in the virtual pak on the left and the notes on the real
+pak on the right, with the port it was found in.
+
+- Up and down move through the notes, left and right switch between the two paks.
+- **A** copies the highlighted note to the other pak. A note with the same game,
+  name and extension there is replaced after a second question. A pak with no free
+  note slot (16 is the limit) or too few free pages refuses the copy and says so.
+- **L or Z** moves to the next port holding a Controller Pak.
+- **R** opens the options: delete the highlighted note, clone the real pak into the
+  virtual one (every note in the virtual pak is lost), clone the virtual pak onto
+  the real one (everything on the real pak is replaced), delete the virtual pak.
+- The first change to a real pak during a visit writes its previous contents to
+  `sd:/cpak_saves` first, as a `.pak` the Controller Pak manager can restore.
+
+Paks with more than one bank (some third-party ones) are left alone in either
+direction, and a real pak with no file system on it (never formatted, or damaged)
+is not written to; format it in the Controller Pak manager first. A pak made before
+this version shows up under the name of its first note until its game is launched
+once, which records the game's file name beside the pak; an empty one without a name
+is left off the list until then, since nothing says whose it is.
 
 ## Compatibility
 
@@ -258,7 +292,7 @@ handler too; the game has no Controller Pak use).
 | 007: The World Is Not Enough | works |  |
 | A Bug's Life | works |  |
 | Aerofighter's Assault | works |  |
-| AeroGauge | does not work | a save or a load hangs the game |
+| AeroGauge | works |  |
 | Aidyn Chronicles: The First Mage | works |  |
 | All-Star Baseball 2000 | does not work | black screen at boot with the engine in place |
 | All-Star Baseball 2001 | does not work | black screen at boot with the engine in place |
@@ -272,8 +306,8 @@ handler too; the game has no Controller Pak use).
 | Banjo-Tooie | works |  |
 | Bassmasters 2000 | works |  |
 | Batman Beyond: Return of the Joker | works |  |
-| BattleTanx | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
-| BattleTanx: Global Assault | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
+| BattleTanx | works |  |
+| BattleTanx: Global Assault | works |  |
 | Battlezone: Rise of the Black Dogs | works |  |
 | Beast Wars Transmetal | works |  |
 | Beetle Adventure Racing! | works |  |
@@ -292,7 +326,7 @@ handler too; the game has no Controller Pak use).
 | California Speed | works |  |
 | Carmageddon 64 | works |  |
 | Castlevania | works |  |
-| Castlevania: Legacy of Darkness | works |  |
+| Castlevania: Legacy of Darkness | works | with Slow motion on, its high-resolution mode does not boot; keep Slow motion off for it |
 | Chameleon Twist | works |  |
 | Chameleon Twist 2 | works |  |
 | Charlie Blast's Territory | works |  |
@@ -304,7 +338,7 @@ handler too; the game has no Controller Pak use).
 | Conker's Bad Fur Day | works | 64 MiB ROM: boots as in the stock menu, no states, no pak |
 | Cruis'n Exotica | works |  |
 | Cruis'n USA | works |  |
-| Cruis'n World | does not work | a save or a load hangs the game |
+| Cruis'n World | works |  |
 | CyberTiger | works |  |
 | Dark Rift | works |  |
 | Deadly Arts | works |  |
@@ -666,7 +700,8 @@ cannot find.
   the state it held before. The alternative, a half-written state that loads,
   is worse. The other slots are untouched.
 - The virtual pak replaces whatever is in its port's accessory slot while it is
-  in (a real Controller Pak there would take the game's writes too), a port other
+  in (the menu refuses a port with a real Controller Pak in it, which would take
+  the game's writes too), a port other
   than 1 needs a controller in it when the game boots, and its file goes to the card
   a second and a half after the game's last write; a power cut inside that window
   loses those last writes.
