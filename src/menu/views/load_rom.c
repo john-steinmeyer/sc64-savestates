@@ -501,7 +501,7 @@ void sc64ss_shots_finish (const char *storage_prefix) {
 // (serial, device id 1, one bank, two checksums), the FAT at 0x100 with a backup at
 // 0x200 (five reserved pages, the rest free, a checksum byte in entry 0), an empty
 // note table at 0x300.
-static void sc64ss_pak_format (uint8_t *img, uint32_t crc1, uint32_t crc2) {
+void sc64ss_pak_format (uint8_t *img, uint32_t crc1, uint32_t crc2) {
     uint8_t id[32];
     uint32_t seed = crc1 ^ (crc2 * 2654435761u) ^ (uint32_t) get_ticks();
     uint32_t sum = 0;
@@ -580,6 +580,7 @@ static bool sc64ss_prepare_pak (menu_t *menu) {
         debugf("SC64SS: pak file %s %s\n", fp, ok ? "created" : "NOT created");
     }
     if (ok) {
+        sc64ss_vpak_label_store(fp, path_last_get(menu->load.rom_path));   // the game's name for the paks view
         memset(table, 0, sizeof(table));
         ok = sc64ss_state_file_runs(fp, table, &total, SC64SS_VPAK_LEN / 512);
         if (ok && (total >= SC64SS_VPAK_LEN / 512)) {
@@ -945,12 +946,28 @@ static void set_savestate_option (menu_t *menu, void *arg) {
 // at launch (1..4: a controller must be in that port when the game boots, since a game
 // only talks to the ports it found then) or off; the panel's Game page can take it out
 // and put it back in any port while the game runs.
+// SC64SS: a real Controller Pak in a port (1..4), as the joypad subsystem sees it this frame.
+// The virtual pak in that port answers the game first, and the game's writes would land in
+// the real pak as well: such a port is refused, in the port list and at launch.
+static bool vpak_port_holds_pak (int port) {
+    joypad_port_t p = (joypad_port_t) (port - 1);
+    return (port >= 1) && (port <= 4) && joypad_is_connected(p) && (joypad_get_accessory_type(p) == JOYPAD_ACCESSORY_TYPE_CONTROLLER_PAK);
+}
+static char vpak_conflict_text[224];
+
 static void set_vpak_option (menu_t *menu, void *arg) {
     int port = (int) (uintptr_t) arg;
     bool enabled = (port != 0);
     if (enabled && !is_memory_expanded()) {
         rom_config_setting_set_vpak(menu->load.rom_path, &menu->load.rom_info, false);
         menu_show_error(menu, "The virtual Controller Pak requires an Expansion Pak");
+        menu->browser.reload = true;
+        return;
+    }
+    if (enabled && vpak_port_holds_pak(port)) {
+        snprintf(vpak_conflict_text, sizeof(vpak_conflict_text),
+                 "A Controller Pak is plugged into port %d. The game's writes would land in it as well as in the virtual pak.\nTake it out to use this port, or pick another.", port);
+        menu_show_error(menu, vpak_conflict_text);
         menu->browser.reload = true;
         return;
     }
@@ -1019,6 +1036,14 @@ static void open_hotkeys (menu_t *menu, void *arg) {
     (void)arg;
     menu->hotkeys_for_rom = true;
     menu->next_mode = MENU_MODE_HOTKEYS;
+}
+
+// SC64SS: this game's virtual pak beside a real Controller Pak, for copies either way
+static void open_vpak_copy (menu_t *menu, void *arg) {
+    (void)arg;
+    menu->vpak_view.check_code = menu->load.rom_info.check_code;
+    menu->vpak_view.from_rom = true;
+    menu->next_mode = MENU_MODE_VIRTUAL_PAK;
 }
 
 // SC64SS: the buttons a launch hands the routine: the ROM's own setting when it reads as
@@ -1172,14 +1197,19 @@ static component_context_menu_t set_savestate_options_menu = {
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
+// SC64SS: the port entries' texts carry what is plugged into each port (vpak_ports_refresh,
+// every frame the view runs, so a pak pulled out or put in shows at once)
+static char vpak_port_text[4][40] = { "Port 1", "Port 2", "Port 3", "Port 4" };
+
 static component_context_menu_t set_vpak_options_menu = {
     .get_default_selection = get_rom_vpak_current_selection,
     .list = {
-    { .text = "Port 1", .action = set_vpak_option, .arg = (void *) (1)},
-    { .text = "Port 2", .action = set_vpak_option, .arg = (void *) (2)},
-    { .text = "Port 3", .action = set_vpak_option, .arg = (void *) (3)},
-    { .text = "Port 4", .action = set_vpak_option, .arg = (void *) (4)},
+    { .text = vpak_port_text[0], .action = set_vpak_option, .arg = (void *) (1)},
+    { .text = vpak_port_text[1], .action = set_vpak_option, .arg = (void *) (2)},
+    { .text = vpak_port_text[2], .action = set_vpak_option, .arg = (void *) (3)},
+    { .text = vpak_port_text[3], .action = set_vpak_option, .arg = (void *) (4)},
     { .text = "Off", .action = set_vpak_option, .arg = (void *) (0)},
+    { .text = "Manage saves", .action = open_vpak_copy, .arg = (void *) (0x100)},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -1326,7 +1356,32 @@ static bool rom_requires_missing_expansion_pak (menu_t *menu) {
     return (menu->load.rom_info.features.expansion_pak == EXPANSION_PAK_REQUIRED) && !is_memory_expanded();
 }
 
+// SC64SS: what each port holds, beside its entry in the Virtual Controller Pak list. A real
+// Controller Pak grays the port (and its choice is refused); a Rumble Pak or Transfer Pak is
+// noted only, since the virtual pak in that port is the panel's pull-out use (Beetle Adventure
+// Racing wants the Rumble Pak at other times); an empty port is noted because a port other
+// than 1 needs a controller in it when the game boots.
+static void vpak_ports_refresh (void) {
+    for (int p = 0; p < 4; p++) {
+        const char *note = "";
+        bool gray = false;
+        if (!joypad_is_connected((joypad_port_t) p)) {
+            note = "   no controller";
+        } else {
+            switch (joypad_get_accessory_type((joypad_port_t) p)) {
+                case JOYPAD_ACCESSORY_TYPE_CONTROLLER_PAK: note = "   Controller Pak plugged in"; gray = true; break;
+                case JOYPAD_ACCESSORY_TYPE_RUMBLE_PAK: note = "   Rumble Pak plugged in"; break;
+                case JOYPAD_ACCESSORY_TYPE_TRANSFER_PAK: note = "   Transfer Pak plugged in"; break;
+                default: break;
+            }
+        }
+        snprintf(vpak_port_text[p], sizeof(vpak_port_text[p]), "Port %d%s", p + 1, note);
+        set_vpak_options_menu.list[p].gray = gray;
+    }
+}
+
 static void process (menu_t *menu) {
+    vpak_ports_refresh();
     if (ui_components_context_menu_process(menu, &options_context_menu)) {
         return;
     }
@@ -1695,6 +1750,15 @@ static void load (menu_t *menu) {
     }
     if (!menu->load.rom_info.settings.watch_reads) {
         debugf("SC64SS: watch_reads=0 in the ini, the watchpoint covers writes only\n");
+    }
+    // SC64SS: a real Controller Pak in the virtual pak's port would take the game's writes as
+    // well as the virtual one: the launch waits until it is out, or the pak set elsewhere
+    if (ce_vpak && vpak_port_holds_pak(menu->load.rom_info.settings.vpak_port)) {
+        snprintf(vpak_conflict_text, sizeof(vpak_conflict_text),
+                 "A Controller Pak is plugged into port %d, where this game's virtual pak goes. The game's writes would land in it.\nTake it out, or set the virtual pak to another port or Off in the ROM's options.",
+                 menu->load.rom_info.settings.vpak_port);
+        menu_show_error(menu, vpak_conflict_text);
+        return;
     }
     menu->boot_params->watch_reads = ce_watch_reads;
     // SC64SS borrowed-RAM mode: no resident hook; the vector-page gate and the cart

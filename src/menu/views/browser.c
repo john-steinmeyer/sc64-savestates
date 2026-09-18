@@ -630,9 +630,18 @@ static void set_menu_next_mode (menu_t *menu, void *arg) {
     menu->next_mode = next_mode;
 }
 
+// SC64SS: the virtual Controller Paks view, every game's pak
+static void open_virtual_paks (menu_t *menu, void *arg) {
+    (void) arg;
+    menu->vpak_view.check_code = 0;
+    menu->vpak_view.from_rom = false;
+    menu->next_mode = MENU_MODE_VIRTUAL_PAK;
+}
+
 static component_context_menu_t settings_context_menu = {
     .list = {
         { .text = "Controller Pak manager", .action = set_menu_next_mode, .arg = (void *) (MENU_MODE_CONTROLLER_PAKFS) },
+        { .text = "Virtual Controller Paks", .action = open_virtual_paks },
         { .text = "Menu settings", .action = set_menu_next_mode, .arg = (void *) (MENU_MODE_SETTINGS_EDITOR) },
         { .text = "Time (RTC) settings", .action = set_menu_next_mode, .arg = (void *) (MENU_MODE_RTC) },
         { .text = "Menu information", .action = set_menu_next_mode, .arg = (void *) (MENU_MODE_CREDITS) },

@@ -232,6 +232,7 @@ static view_t menu_views[] = {
     { MENU_MODE_DATEL_CODE_EDITOR, view_datel_code_editor_init, view_datel_code_editor_display },
     { MENU_MODE_EXTRACT_FILE, view_extract_file_init, view_extract_file_display },
     { MENU_MODE_HOTKEYS, view_hotkeys_init, view_hotkeys_display },
+    { MENU_MODE_VIRTUAL_PAK, view_virtual_pak_init, view_virtual_pak_display },
 };
 
 /**
