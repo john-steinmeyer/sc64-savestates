@@ -305,7 +305,7 @@ handler too; the game has no Controller Pak use).
 | Cruis'n Exotica | works |  |
 | Cruis'n USA | works |  |
 | Cruis'n World | does not work | a save or a load hangs the game |
-| CyberTiger | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
+| CyberTiger | works |  |
 | Dark Rift | works |  |
 | Deadly Arts | works |  |
 | Destruction Derby 64 | works |  |
@@ -367,7 +367,7 @@ handler too; the game has no Controller Pak use).
 | Jet Force Gemini | works |  |
 | John Romero's Daikatana | works |  |
 | Ken Griffey Jr.'s Slugfest | works |  |
-| Killer Instinct Gold | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
+| Killer Instinct Gold | works |  |
 | Kirby 64: The Crystal Shards | works |  |
 | Knife Edge: Nose Gunner | works |  |
 | Knockout Kings 2000 | works |  |
@@ -390,7 +390,7 @@ handler too; the game has no Controller Pak use).
 | Mario Party 3 | works |  |
 | Mario Tennis | works |  |
 | Mega Man 64 | works |  |
-| Mia Hamm Soccer 64 | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
+| Mia Hamm Soccer 64 | works |  |
 | Mickey's Speedway USA | works |  |
 | Micro Machines 64 Turbo | works |  |
 | Midway's Greatest Arcade Hits Volume 1 | works |  |
@@ -530,7 +530,7 @@ handler too; the game has no Controller Pak use).
 | Twisted Edge Extreme Snowboarding | works |  |
 | V-Rally Edition 99 | works |  |
 | Vigilante 8 | works |  |
-| Vigilante 8: 2nd Offense | works | saves and loads, but I couldn't check the picture (my capture doesn't handle its video mode) |
+| Vigilante 8: 2nd Offense | works |  |
 | Virtual Chess 64 | works |  |
 | Virtual Pool 64 | works |  |
 | VNES64 + Test Cart | works |  |
