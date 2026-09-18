@@ -1,5 +1,61 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.3-ss1.2 (2026-09-17)
+
+- The slot panel opens with R + Z + Start now. L + R + Start never worked on an
+  original controller, which takes it as the stick reset and drops the Start.
+  Reported, with the fix, by drumstix576. The hotkeys page refuses that combo.
+- Hotkeys can be changed: in the menu settings for every game, or per game in the
+  ROM's options under "Hotkeys and Screenshot". One button or more each. The game
+  doesn't see the buttons while a hotkey is held.
+- Screenshot button, set per game. A tap writes the screen to
+  `sd:/screenshots/<game>/` as a PNG named with the cartridge clock's time. The
+  game never sees the button. Hundreds fit per launch; they wait in one file that
+  the menu sorts out on its next start.
+- The virtual Controller Pak's port is a setting: Port 1 to 4, or Off. On the
+  panel's Game page the pak can be pulled out and put back in any port while the
+  game runs, and the game is told about it the way the console reports a real
+  swap. Beetle Adventure Racing can use a Controller Pak to save and a Rumble Pak
+  to race; Perfect Dark takes a Rumble Pak in port 1 with the pak in port 2.
+- Save states for homebrew built with libdragon. Tested on about forty ROMs,
+  including nineteen of the N64brew Game Jam 2025 entries and most of the SDK
+  examples. A ROM with libdragon's pre-2023 entry code, or a boot code the menu
+  doesn't know, runs without the routine.
+- Frame step: one press lets exactly one frame through, holding the button steps
+  ten times a second. L by default. A 30 fps game used to need two presses.
+- Slow motion is refused for Donkey Kong 64, Perfect Dark, Indiana Jones and Rush
+  2049. They use all of the Expansion Pak, so they never booted with it on. They
+  always launch on the cartridge engine now, whatever their ini says.
+- Left and right switch the panel's pages, same as L and R.
+- Image viewer: L, R, C-Left, C-Right and the D-pad step through the folder, the
+  file browser previews the highlighted image, and a background image is scaled
+  to fill the screen.
+- Fixed: a tap of a hotkey's own button showed the game L and R released and
+  pressed again. Mario 64 took it for a camera press.
+- Fixed: in 480-line modes the panel and the on-screen text drew a line past the
+  end of the frame buffer. A 640x480 game crashed on leaving the panel under slow
+  motion.
+- Fixed: games that mask an interrupt and poll it instead (libdragon leaves the
+  cartridge's pending) blocked every save, load and panel request. Clean moments
+  now count only the interrupts the game has enabled, and a request that finds
+  none times out instead of holding up later hotkeys.
+- Fixed: the RDP's pipe-busy flag blocked saves in games that never send a full
+  sync. The routine waits for the command and DMA units only.
+- Fixed: after a save, load or panel visit the game resumes on its vblank. The
+  first frame after a resume used to show a field late.
+- Fixed: with Slow motion on, a state saved with it off could not be read back from
+  the card after a power cycle: the panel showed the slot empty and a suspended game
+  did not resume. It loads now, as it always did while still in cartridge memory.
+- The controller is also read every frame, for games whose controller transfers
+  don't raise an exception the routine sees.
+- libdragon details: a state carries the RSP's scalar registers (header version
+  11); a game whose RSP is busy at every frame is held at the frame boundary until
+  its queue runs dry (header version 12); after a load the RDP is put back where
+  the saved list left it (BotBoy!64 crashed seconds after every load); debug
+  builds that log over USB get their card copies written while the game is held;
+  a ROM without a checksum in its header gets one computed from its contents, for
+  the state and pak file names.
+
 ## 0.3.3-ss1.1 (2026-09-14)
 
 - **Nothing resident any more.** The routine now lives on the cartridge: a gate of a

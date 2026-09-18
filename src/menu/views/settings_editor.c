@@ -128,6 +128,13 @@ static void set_rumble_enabled_type (menu_t *menu, void *arg) {
 // }
 #endif
 
+// SC64SS: the save state hotkeys every game gets (a ROM's own options can override them)
+static void open_hotkeys (menu_t *menu, void *arg) {
+    (void)arg;
+    menu->hotkeys_for_rom = false;
+    menu->next_mode = MENU_MODE_HOTKEYS;
+}
+
 static void remove_background_image (menu_t *menu, void *arg) {
     (void)arg;
     (void)menu;
@@ -318,6 +325,7 @@ static component_context_menu_t options_context_menu = { .list = {
     { .text = "Show Cheat Files", .submenu = &set_show_cheat_files_type_context_menu },
     { .text = "PAL60 Mode", .submenu = &set_pal60_type_context_menu },
     { .text = "Wrap File List", .submenu = &set_wrap_file_list_scrolling_context_menu },
+    { .text = "Save State Hotkeys", .action = open_hotkeys },
     #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
     { .text = "ROM Loading Bar", .submenu = &set_loading_progress_bar_enabled_context_menu },
 #else
@@ -390,6 +398,7 @@ static void draw (menu_t *menu, surface_t *d) {
         "     Show Cheat files  : %s\n"
         "*    PAL60 Mode        : %s\n"
         "     Wrap File List    : %s\n"
+        "     Save State Keys   : %s / %s\n"
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
         "     Autoload ROM      : %s\n\n"
         "     ROM Loading Bar   : %s\n"
@@ -414,6 +423,7 @@ static void draw (menu_t *menu, surface_t *d) {
         format_switch(menu->settings.show_cheat_files),
         format_switch(menu->settings.pal60_enabled),
         format_switch(menu->settings.wrap_file_list_scrolling),
+        menu->settings.ss_key_save, menu->settings.ss_key_load,
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
         format_switch(menu->settings.rom_autoload_enabled),
         format_switch(menu->settings.loading_progress_bar_enabled)

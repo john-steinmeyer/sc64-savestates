@@ -1,30 +1,41 @@
 # Save states for the SummerCart64 (N64FlashcartMenu fork)
 
+A fork of [N64FlashcartMenu](https://github.com/Polprzewodnikowy/N64FlashcartMenu) by
+Polprzewodnikowy (AGPL-3.0) with save states, a virtual Controller Pak, slow motion,
+screenshots and configurable hotkeys for the SummerCart64. Everything the stock menu
+does, it still does. Problems with the additions belong in this repository's issues,
+not upstream's.
+
 [![Save states on original N64 hardware with the SummerCart64: the video](docs/media/video.jpg)](https://www.youtube.com/watch?v=yBQcb5c4tq0)
 
 **[Watch the demo (4½ minutes)](https://www.youtube.com/watch?v=yBQcb5c4tq0)**: the options, the slot panel, a load, slow motion,
 suspend and resume, on the console.
 
-This fork adds, for the SummerCart64:
+What it adds:
 
-- **Save states.** Hold L + R + D-pad Up in a game to save, L + R + D-pad Down to
-  load, R + Z + Start for a slot panel with thumbnails; states persist on the SD card.
+- Save states. Hold L + R + D-pad Up in a game to save, L + R + D-pad Down to load,
+  R + Z + Start for a slot panel with thumbnails. States persist on the SD card.
   Nothing stays resident in the console's memory, so games that use the whole
   Expansion Pak work too.
-- **A virtual Controller Pak (memory pak).** A game that uses one gets a pak that lives
-  on the SD card, whether or not a real one is plugged in; on by default for the games
-  known to use one.
-- **Suspend and resume.** Suspend a game to a slot from the panel and switch the
-  console off; the next launch of that game picks up where you left it.
-- **Slow motion and frame step**, as a per-game option.
+- A virtual Controller Pak. A game that uses one gets a pak that lives on the SD
+  card, whether or not a real one is plugged in. On by default for the games known
+  to use one, in the port you pick, and it can be pulled out and put back from the
+  panel mid-game, for games that want a Rumble Pak in that port at other times.
+- Suspend and resume. Suspend a game to a slot, switch the console off, and the
+  next launch of that game picks up where you left it.
+- Slow motion and frame step, per game.
+- Screenshots. A button of your choice writes the screen to the SD card as a PNG.
+- Configurable hotkeys, for every game or per game.
+- Homebrew too. Games built with libdragon get save states as well.
 
-It needs an Expansion Pak and works with 276 of the 298 games tried so far.
+It needs an Expansion Pak. 276 of the 298 games I've tried work:
+[the compatibility list](docs/savestates.md#compatibility).
 
 ![A state loaded from the slot panel](docs/media/preview.gif)
 
-- **[Save states: setup, usage, compatibility, how it works](docs/savestates.md)**
+- [Save states: setup, usage, compatibility, how it works](docs/savestates.md)
 - Download `sc64menu.n64` from the Releases page, copy it to the root of the SD card,
-  then switch **Save States** on per game in the ROM's options.
+  then switch Save States on per game in the ROM's options.
 
 Not affiliated with or endorsed by Nintendo. This is a fork of the open-source
 N64FlashcartMenu (AGPL-3.0); it ships no game data of any kind.

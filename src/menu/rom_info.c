@@ -787,10 +787,16 @@ static void extract_rom_info (match_t *match, rom_header_t *rom_header, rom_info
     // port for a Rumble Pak every few frames when a pak answers (Ocarina of Time) is not
     // slowed by it. The per-ROM option switches it either way.
     rom_info->settings.vpak_enabled = rom_info->features.controller_pak;
+    rom_info->settings.vpak_port = 1;
     rom_info->settings.hook_borrowed = true;     // SC64SS: the default placement (Slow motion off)
     rom_info->settings.watch_reads = true;       // SC64SS: the vector's reads watched too (Indiana Jones needs it)
     rom_info->settings.patches_enabled = false;
     rom_info->settings.clear_rdram_enabled = false;
+    rom_info->settings.hotkey_save[0] = 0;
+    rom_info->settings.hotkey_load[0] = 0;
+    rom_info->settings.hotkey_panel[0] = 0;
+    rom_info->settings.hotkey_step[0] = 0;
+    rom_info->settings.screenshot_button[0] = 0;
 }
 
 /**
@@ -1193,8 +1199,16 @@ static void load_rom_config_from_file (path_t *path, rom_info_t *rom_info) {
         rom_info->settings.cheats_enabled = ini_get_bool(rom_config_ini, "", "cheats_enabled", false);
         rom_info->settings.savestates_enabled = ini_get_bool(rom_config_ini, "", "savestates_enabled", false);
         rom_info->settings.vpak_enabled = ini_get_bool(rom_config_ini, "", "vpak_enabled", rom_info->features.controller_pak);   // SC64SS: the database's word unless the ini says
+        int vpak_port = ini_get_int(rom_config_ini, "", "vpak_port", 1);   // SC64SS: the port the virtual pak sits in at launch
+        rom_info->settings.vpak_port = ((vpak_port >= 1) && (vpak_port <= 4)) ? vpak_port : 1;
         rom_info->settings.hook_borrowed = ini_get_bool(rom_config_ini, "", "hook_borrowed", true);
         rom_info->settings.watch_reads = ini_get_bool(rom_config_ini, "", "watch_reads", true);
+        // SC64SS: the ROM's own hotkeys and screenshot button (empty: none set here)
+        snprintf(rom_info->settings.hotkey_save, sizeof(rom_info->settings.hotkey_save), "%s", ini_get_string(rom_config_ini, "", "hotkey_save", ""));
+        snprintf(rom_info->settings.hotkey_load, sizeof(rom_info->settings.hotkey_load), "%s", ini_get_string(rom_config_ini, "", "hotkey_load", ""));
+        snprintf(rom_info->settings.hotkey_panel, sizeof(rom_info->settings.hotkey_panel), "%s", ini_get_string(rom_config_ini, "", "hotkey_panel", ""));
+        snprintf(rom_info->settings.hotkey_step, sizeof(rom_info->settings.hotkey_step), "%s", ini_get_string(rom_config_ini, "", "hotkey_step", ""));
+        snprintf(rom_info->settings.screenshot_button, sizeof(rom_info->settings.screenshot_button), "%s", ini_get_string(rom_config_ini, "", "screenshot_button", ""));
         rom_info->settings.patches_enabled = ini_get_bool(rom_config_ini, "", "patches_enabled", false);
         rom_info->settings.clear_rdram_enabled = ini_get_bool(rom_config_ini, "", "clear_rdram_enabled", false);
         
@@ -1350,12 +1364,106 @@ rom_err_t rom_config_setting_set_vpak (path_t *path, rom_info_t *rom_info, bool 
     return save_rom_config_setting_to_file(path, "", "vpak_enabled", enabled, rom_info->features.controller_pak);
 }
 
+rom_err_t rom_config_setting_set_vpak_port (path_t *path, rom_info_t *rom_info, int port) {
+    if ((port < 1) || (port > 4)) {
+        port = 1;
+    }
+    rom_info->settings.vpak_port = port;
+    // SC64SS: port 1 is the default, so the key goes with it
+    return save_rom_config_setting_to_file(path, "", "vpak_port", port, 1);
+}
+
 rom_err_t rom_config_setting_set_hook_borrowed (path_t *path, rom_info_t *rom_info, bool enabled) {
     rom_info->settings.hook_borrowed = enabled;
     // SC64SS: the loader's default is true (Slow motion off): the key is written when the
     // option is on (hook_borrowed = 0) and deleted when it is off (with a default of false
     // here, "on" was deleted and the option never stuck)
     return save_rom_config_setting_to_file(path, "", "hook_borrowed", enabled, true);
+}
+
+rom_err_t rom_config_setting_set_text (path_t *path, const char *id, const char *value) {
+    path_t *rom_info_path = path_clone(path);
+    path_ext_replace(rom_info_path, "ini");
+    ini_t *rom_config_ini = ini_try_load(path_get(rom_info_path));
+    if (!rom_config_ini) {
+        path_free(rom_info_path);
+        return ROM_ERR_SAVE_IO;
+    }
+    if (value && value[0]) {
+        ini_set_string(rom_config_ini, "", id, value);
+    } else {
+        ini_delete_key(rom_config_ini, "", id);
+    }
+    bool empty = ini_is_empty(rom_config_ini);
+    if (!empty && !ini_save(rom_config_ini, path_get(rom_info_path))) {
+        path_free(rom_info_path);
+        ini_free(rom_config_ini);
+        return ROM_ERR_SAVE_IO;
+    }
+    ini_free(rom_config_ini);
+    if (empty && remove(path_get(rom_info_path)) && (errno != ENOENT)) {
+        path_free(rom_info_path);
+        return ROM_ERR_SAVE_IO;
+    }
+    path_free(rom_info_path);
+    return ROM_OK;
+}
+
+// SC64SS: the buttons by name, the way the ini and the menu spell them
+static const struct { const char *name; uint16_t bit; } sc64ss_key_names[] = {
+    { "L", 0x0020 }, { "R", 0x0010 }, { "Z", 0x2000 }, { "A", 0x8000 }, { "B", 0x4000 }, { "Start", 0x1000 },
+    { "Up", 0x0800 }, { "Down", 0x0400 }, { "Left", 0x0200 }, { "Right", 0x0100 },
+    { "C-Up", 0x0008 }, { "C-Down", 0x0004 }, { "C-Left", 0x0002 }, { "C-Right", 0x0001 },
+};
+
+uint16_t sc64ss_keys_parse (const char *text) {
+    uint16_t mask = 0;
+    if (!text) {
+        return 0;
+    }
+    while (*text) {
+        while ((*text == ' ') || (*text == '+')) {
+            text++;
+        }
+        if (!*text) {
+            break;
+        }
+        const char *start = text;
+        while (*text && (*text != '+') && (*text != ' ')) {
+            text++;
+        }
+        size_t n = (size_t) (text - start);
+        if ((n > 2) && ((start[0] == 'D') || (start[0] == 'd')) && (start[1] == '-')) {
+            start += 2;                   // "D-Up" reads as "Up"
+            n -= 2;
+        }
+        bool found = false;
+        for (size_t k = 0; k < sizeof(sc64ss_key_names) / sizeof(sc64ss_key_names[0]); k++) {
+            if ((strlen(sc64ss_key_names[k].name) == n) && (strncasecmp(sc64ss_key_names[k].name, start, n) == 0)) {
+                mask |= sc64ss_key_names[k].bit;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return 0;                     // a word that is no button: the setting stands for nothing
+        }
+    }
+    return mask;
+}
+
+char *sc64ss_keys_text (uint16_t mask, char *buf, size_t len) {
+    size_t used = 0;
+    buf[0] = 0;
+    for (size_t k = 0; k < sizeof(sc64ss_key_names) / sizeof(sc64ss_key_names[0]); k++) {
+        if (mask & sc64ss_key_names[k].bit) {
+            used += snprintf(buf + used, (used < len) ? (len - used) : 0, "%s%s", used ? "+" : "", sc64ss_key_names[k].name);
+        }
+    }
+    if (!buf[0]) {
+        snprintf(buf, len, "None");
+    }
+    return buf;
 }
 
 rom_err_t rom_config_setting_set_clear_rdram (path_t *path, rom_info_t *rom_info, bool enabled) {
@@ -1369,6 +1477,98 @@ rom_err_t rom_config_setting_set_patches (path_t *path, rom_info_t *rom_info, bo
     return save_rom_config_setting_to_file(path, "", "patches_enabled", enabled, false);
 }
 #endif
+
+// SC64SS: a check code for a ROM whose header has none: a CRC of the 64 KiB after the
+// boot code (the ELF header and the start of the program for a libdragon ROM) and the
+// file size in the low word. Stable for the file, different between builds.
+static uint64_t rom_content_check_code (path_t *path) {
+    static uint8_t buf[4096] __attribute__((aligned(16)));
+    FILE *f = fopen(path_get(path), "rb");
+    if (f == NULL) {
+        return 0;
+    }
+    setbuf(f, NULL);
+    mz_ulong crc = mz_crc32(0, NULL, 0);
+    size_t total = 0;
+    if (fseek(f, 0x1000, SEEK_SET) == 0) {
+        while (total < 0x10000) {
+            size_t n = fread(buf, 1, sizeof(buf), f);
+            if (n == 0) {
+                break;
+            }
+            crc = mz_crc32(crc, buf, n);
+            total += n;
+        }
+    }
+    long size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : 0;
+    fclose(f);
+    if (total == 0) {
+        return 0;
+    }
+    return (((uint64_t) (uint32_t) (crc)) << 32) | ((uint64_t) (uint32_t) (size));
+}
+
+// SC64SS: libdragon's entry code from before it had its own boot code (2010 to early 2023)
+// began, for all those years, with the stack set from the memory-size word the retail boot
+// code leaves at 0x80000318: lui t0,0x8000; lw t0,0x318(t0); lui t1,0x7FFF; ori t1,t1,0xFFF0;
+// addu sp,t0,t1. Such a game then copies its own exception vectors over the routine's way in
+// and never comes up with it installed, so the routine stays out for it.
+static bool rom_old_libdragon_entry (path_t *path) {
+    static uint32_t code[64] __attribute__((aligned(16)));
+    static const uint32_t stack_words[5] = { 0x3C088000, 0x8D080318, 0x3C097FFF, 0x3529FFF0, 0x0109E821 };
+    FILE *f = fopen(path_get(path), "rb");
+    if (f == NULL) {
+        return false;
+    }
+    setbuf(f, NULL);
+    size_t n = 0;
+    if (fseek(f, 0x1000, SEEK_SET) == 0) {
+        n = fread(code, sizeof(uint32_t), 64, f);
+    }
+    fclose(f);
+    for (size_t i = 0; i + 5 <= n; i++) {
+        if (memcmp(&code[i], stack_words, sizeof(stack_words)) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// SC64SS: libdragon's boot code hands the game over with a `jr a0` whose delay slot sets the
+// stack pointer, between the boot code and the ELF header (the menu's boot code points that
+// jump at the routine's stub). The same search as boot.c's, on the file: the ELF header at a
+// 256-byte boundary within the first 128 KiB, the pair exactly once before it. A boot code
+// newer than this (nothing found, or more than one) keeps the routine out, so the game runs
+// as it always did.
+static bool rom_libdragon_handoff (path_t *path) {
+    static uint32_t buf[1024] __attribute__((aligned(16)));
+    FILE *f = fopen(path_get(path), "rb");
+    if (f == NULL) {
+        return false;
+    }
+    setbuf(f, NULL);
+    uint32_t elf = 0;
+    uint32_t found = 0;
+    uint32_t prev = 0;
+    for (uint32_t off = 0x1000; (off < 0x20000) && (elf == 0); off += sizeof(buf)) {
+        if ((fseek(f, off, SEEK_SET) != 0) || (fread(buf, sizeof(uint32_t), 1024, f) != 1024)) {
+            break;
+        }
+        for (uint32_t i = 0; i < 1024; i++) {
+            uint32_t w = buf[i];
+            if ((((off + (4 * i)) & 0xFF) == 0) && (w == 0x7F454C46UL)) {
+                elf = off + (4 * i);
+                break;
+            }
+            if ((prev == 0x00800008UL) && (((w & 0xFC1FFFFFUL) == 0x0000E825UL) || ((w & 0xFC1FFFFFUL) == 0x0000E821UL))) {
+                found++;
+            }
+            prev = w;
+        }
+    }
+    fclose(f);
+    return (elf != 0) && (found == 1);
+}
 
 rom_err_t rom_config_load (path_t *path, rom_info_t *rom_info) {
     FILE *f;
@@ -1393,7 +1593,24 @@ rom_err_t rom_config_load (path_t *path, rom_info_t *rom_info) {
     match_t match = find_rom_in_database(&rom_header);
 
     extract_rom_info(&match, &rom_header, rom_info);
-    debugf("[META] rom_config_load: game_code='%c%c%c%c', CIC type=%d\\n", 
+    rom_info->libdragon = false;
+    for (uint32_t off = 0; (off + 8) <= IPL3_LENGTH; off += 16) {
+        if (memcmp(&rom_header.ipl3[off], " Libdrag", 8) == 0) {
+            rom_info->libdragon = true;
+            break;
+        }
+    }
+    rom_info->libdragon_old = (!rom_info->libdragon) && rom_old_libdragon_entry(path);
+    rom_info->libdragon_handoff = rom_info->libdragon && rom_libdragon_handoff(path);
+    rom_info->check_code_from_content = false;
+    if (rom_info->check_code == 0) {
+        // SC64SS: a ROM built without a header check code (libdragon's tools leave it
+        // zero) gets one from its contents, so its states and its virtual pak have a
+        // name of their own on the card.
+        rom_info->check_code = rom_content_check_code(path);
+        rom_info->check_code_from_content = true;
+    }
+    debugf("[META] rom_config_load: game_code='%c%c%c%c', CIC type=%d\\n",
            rom_info->game_code[0], rom_info->game_code[1], rom_info->game_code[2], rom_info->game_code[3],
            rom_info->cic_type);
 

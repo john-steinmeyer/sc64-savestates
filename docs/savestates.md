@@ -20,7 +20,7 @@ It also gives games that use one a **virtual Controller Pak**, so games that sav
 a pak save to the SD card whether or not a pak is plugged in, and it keeps the first
 release's slow motion and frame step as a per-game option.
 
-Tested on 298 games so far; 276 work (see
+I've tested 298 games so far; 276 work (see
 [Compatibility](#compatibility)).
 
 ## What you need
@@ -51,12 +51,16 @@ is stored in the ROM's `.ini` file next to it (`savestates_enabled=1`), so it st
 on for that game. It is off until you switch it on, because the first boot with it
 on creates the game's slot files on the card.
 
-**Virtual Controller Pak** is in the same menu. It is **on by default for the games the
-menu's database marks as Controller Pak users** (Mario Kart 64, Perfect Dark, Turok,
-the wrestling games...) and off for the rest, since a game with no pak use gains nothing
+**Virtual Controller Pak** is in the same menu: the port the pak starts in, **Port 1**
+to **Port 4**, or **Off**. It is **on, in port 1, by default for the games the menu's
+database marks as Controller Pak users** (Mario Kart 64, Perfect Dark, Turok, the
+wrestling games...) and off for the rest, since a game with no pak use gains nothing
 from one and a Rumble Pak in port 1 keeps working. Switch it on for a game the database
 misses, or off for a game where you want a real pak (`vpak_enabled=1` or `0` in the
-ROM's `.ini`).
+ROM's `.ini`; `vpak_port=2` for a port other than 1). A port other than 1 needs a
+controller plugged into it when the game boots, since a game only talks to the ports
+it found then. The pak can also be taken out and put back, in any port, while the
+game runs: see the panel's Game page below.
 
 **Slow motion** is in the same menu, off by default. On, the routine stays resident in
 the top 128 KiB of RAM instead of living on the cartridge, which is what lets it hold
@@ -64,9 +68,28 @@ the game between frames: the panel's Game page then offers slow motion and frame
 Everything else is the same either way, and the two placements share one slot layout,
 so you can switch it on and off for a game without losing its states (a state saved
 with it on holds the RAM below the routine, 7.75 MiB, and loads either way). The one
-cost: games that use every byte of the Expansion Pak (Donkey Kong 64, Perfect Dark,
-Indiana Jones and the Infernal Machine, San Francisco Rush 2049) do not boot with it
-on; switch it back off for those. Stored as `hook_borrowed=0` in the ROM's `.ini`.
+cost: games that use every byte of the Expansion Pak have no room for the routine and
+never boot with it on. The menu refuses the option for the ones it knows about (Donkey
+Kong 64, Perfect Dark, Indiana Jones and the Infernal Machine, San Francisco Rush 2049)
+and launches them on the cartridge engine whatever their `.ini` says. If a game not on
+that list shows a black screen with it on, switch it off. Stored as `hook_borrowed=0`
+in the ROM's `.ini`.
+
+**Hotkeys and Screenshot** opens a page where the quick save, quick load, panel and
+frame step buttons can be set for this game, and a screenshot button chosen (see
+[Screenshots](#screenshots)). Pick a row and press **A**, then hold the buttons on the
+controller for a moment; **R** puts a row back to the menu's setting. The menu's own
+settings page (Start in the file browser, **Menu settings**, then **Save State
+Hotkeys**) sets the buttons every game gets unless its own page says otherwise.
+
+A hotkey is one button or more, held for a moment. The game never sees a hotkey's
+buttons while it is held, so a single-button hotkey takes that button away from the
+game. No hotkey may sit inside another (the frame step button aside, which acts only
+at the panel's Step speed). L + R + Start is refused: an original N64 controller
+answers that combination with its stick reset and never reports the Start, so it
+cannot work as a hotkey. Stored as `hotkey_save`, `hotkey_load`, `hotkey_panel`, `hotkey_step` and
+`screenshot_button` in the ROM's `.ini` (button names joined by `+`, as in
+`L+R+Up`), and under `[savestates]` in `sd:/menu/config.ini` for the menu's.
 
 Boot the game normally. Save states and cheats can be on at the same time; with
 GameShark codes loaded the engine sits at its classic place at the top of RAM, as in
@@ -80,10 +103,16 @@ the stock menu, and the states and the pak ride along with it.
 | L + R + D-pad Down | Load the current slot |
 | R + Z + Start | Open the slot panel |
 
+These are the defaults; the ROM's options page and the menu's settings can set others
+(see above). The panel's Slots page shows the two quick combos in use, and the ROM's
+page in the menu lists them.
+
 The game freezes for about two seconds on a save and about a second and a half on a
-load, then carries on. "STATE SAVED" or "STATE LOADED" shows for a moment in the
-bottom-left corner. After a save the cartridge LED blinks for a couple of seconds
-while the state is copied to the SD card; you can keep playing meanwhile.
+load, then carries on. With Slow motion on for the game, "STATE SAVED" or "STATE
+LOADED" shows for a moment in the bottom-left corner. With it off (the default)
+nothing is drawn on screen, and the cartridge LED is your confirmation. After a save
+the LED blinks for a couple of seconds while the state is copied to the SD card; you
+can keep playing meanwhile.
 
 The panel lists the slots with the date and time of each state and a thumbnail of
 the selected one. Up and down (D-pad or stick) pick a slot, which also becomes the
@@ -92,7 +121,8 @@ asks for confirmation), **B** or **Start** closes the panel. States that only ex
 on the SD card (after a power cycle) are read back in when the panel opens or when
 a load asks for them.
 
-**L** or **R** switches to the panel's second page, **Game**:
+**L** or **R** switches to the panel's second page, **Game** (so do left and right on the
+slots page, and on the Game page's rows that have no value of their own):
 
 - **Exit to menu**: back to the SC64 menu without touching the reset button.
   Anything still on its way to the card is written first (a state being mirrored,
@@ -103,10 +133,20 @@ a load asks for them.
   then exits as above. The next launch of that game loads the slot by itself about
   a second after the game is up, then clears the mark; the state stays in the slot
   like any other. **A** asks for confirmation (an occupied slot is overwritten).
-- **Speed** and **Sound**: slow motion at 1/2, 1/4 or 1/8, or frame step (Z advances
-  one frame), with the sound slowed to match (pitch down) or left to stutter. These
-  need the **Slow motion** option switched on for the game (see above); with it off
-  the two rows say so and do nothing.
+- **Speed** and **Sound**: slow motion at 1/2, 1/4 or 1/8, or frame step, with the
+  sound slowed to match (pitch down) or left to stutter. These need the **Slow
+  motion** option switched on for the game (see above); with it off the two rows say
+  so and do nothing. At the Step speed a press of the frame step button (L unless set
+  otherwise, see the hotkeys above) lets exactly one frame through, and the game
+  never sees the button; held, it steps ten times a second. The button is read many
+  times a frame, so a press shows within a frame or two.
+- **Pak**, shown when the virtual Controller Pak is on for the game: **In port N** or
+  **Out**, changed with left, right or A. Out, the game sees whatever is in that port's
+  slot, a Rumble Pak included. Back in, in the same port or another, the game is told
+  the pak was changed, the same way the console reports a real swap, so it looks
+  again. That is how a game that wants a Controller Pak to save and a Rumble Pak to
+  play gets both: take the pak out when it asks for the Rumble Pak, put it back when
+  it asks for the Controller Pak.
 
 How many slots a game gets depends on its ROM size:
 
@@ -131,10 +171,42 @@ other. The format is versioned and later builds will keep reading these files.
 makes them afresh the first time the game boots, so states from that build are not
 carried over.)
 
+## Screenshots
+
+With a screenshot button set for a game (the **Hotkeys and Screenshot** page; there is
+none unless you pick one), a tap of it writes the picture on screen to the SD card as
+a PNG. The game holds still for a tenth of a second (about half a second in 640x480
+modes). With Slow motion on, "SCREENSHOT SAVED" shows for a moment; either way the
+cartridge LED blinks while the file is written, and you can keep playing meanwhile.
+The game never sees the button, so pick one it does not use, and one no combo uses
+(the page refuses the others).
+
+The files land in `sd:/screenshots/<the ROM's file name>/`, named after the ROM and
+the cartridge clock's time (`Super Mario 64 YYYY-MM-DD HH-MM-SS.png`), and the menu's
+file browser shows them like any image. Between a shot and the next visit to the menu
+they wait inside `sd:/screenshots/pending.bin`, a file the menu keeps allocated in
+advance, because the routine in the game can write into a file but not create one.
+It is 64 MiB where the card has the room, enough for about 280 screenshots of a
+320x240 game or 70 of a 640x480 one per launch. The next visit to the menu files them
+and empties it again; "SCREENSHOTS FULL" means it is full until then.
+
+In the menu's file browser a highlighted image shows a preview beside the list, and in
+the image viewer L, R, C-Left, C-Right and the D-pad move to the previous or next image
+in the folder. A screenshot set as the menu's background (**A** in the image viewer) is
+scaled to fill the screen; **Remove Background** in the menu settings puts the default
+back.
+
+A screenshot taken while "STATE SAVED" or another message is up waits for the next
+frame the game draws, so the message is not in the picture. The PNG holds the pixels
+as the console shows them, 24-bit colour, uncompressed (a 320x240 shot is about
+230 KiB, a 640x480 one 920 KiB). With Slow motion off the game holds still for the
+write as well and nothing is drawn on screen; the LED is the confirmation.
+
 ## Virtual Controller Pak
 
 With **Virtual Controller Pak** on (the default for games that use one), the game sees
-a Controller Pak in port 1 whether or not one is plugged in: the game's pak reads and writes are
+a Controller Pak in the port chosen for it (port 1 unless set otherwise) whether or not
+one is plugged in: the game's pak reads and writes are
 answered from a 32 KiB image in the cartridge memory and the changes go to
 `sd:/savestates/paks/<checkcode>.pak` on the card a moment after the game writes them.
 The file is a plain pak image (one bank), so the menu's Controller Pak tools can
@@ -152,11 +224,17 @@ being answered at the interrupt itself, which works most of the time but not
 always; the menu shows nothing about which case a game is, so if a pak misbehaves
 in a game not listed below, that is the likely reason.
 
-While it is on, a real Controller Pak or Rumble Pak in port 1 is not seen by the
-game, since the cartridge answers first. Turn it off for games where you want
-rumble. The virtual pak answers as a Controller Pak does (reads in the Rumble Pak's
-detection area come back as zeros), so a game that supports both takes it for a
-Controller Pak and does not try to rumble it.
+While it is in a port, a real Controller Pak or Rumble Pak in that port is not seen by
+the game, since the cartridge answers first, and a real Controller Pak there would
+take the game's writes as well, so leave that slot empty. The other ports are the
+game's as usual: a Rumble Pak in port 1 with the virtual pak in port 2, say, works in
+a game that takes a Controller Pak in any port (Perfect Dark). A game that wants both
+in the same port at different times (Beetle Adventure Racing asks for a Controller
+Pak to save and a Rumble Pak to race) gets them from the panel's Pak row: take the
+pak out when the game asks for the Rumble Pak, put it back when it asks for the
+Controller Pak. The virtual pak answers as a Controller Pak does (reads in the Rumble
+Pak's detection area come back as zeros), so a game that supports both takes it for
+a Controller Pak and does not try to rumble it.
 
 ## Compatibility
 
@@ -403,7 +481,7 @@ handler too; the game has no Controller Pak use).
 | Rugrats: Scavenger Hunt | works |  |
 | Rush 2: Extreme Racing USA | works |  |
 | S.C.A.R.S. | works |  |
-| San Francisco Rush 2049 | works |  |
+| San Francisco Rush 2049 | works | its title and menus keep their picture in the top 128 KiB of RAM, the routine's room: the panel does not open on those screens, the screenshot button skips them, and a save or load there shows the routine's bytes in the picture's bottom rows for a moment |
 | Scooby-Doo!: Classic Creep Capers | works |  |
 | Shadow Man | works |  |
 | Shadowgate 64: Trials of the Four Towers | works |  |
@@ -476,39 +554,108 @@ handler too; the game has no Controller Pak use).
 | WWF No Mercy | works |  |
 | Yoshi's Story | works |  |
 
-Games not on the list have simply not been tried yet.
+Games not on the list I just haven't tried yet.
+
+### Homebrew built with libdragon
+
+Games built with libdragon boot through their own open-source boot code, and the
+routine takes a different way in: the menu leaves it on the cartridge and points the
+last instruction of that boot code at it, since libdragon clears all of RAM on its
+way in. The ROM is told apart by the banner in its boot code; retail games are
+untouched by any of this, and a state is the same state.
+
+A few things are particular to these games:
+
+- They keep the resident placement, whatever the borrowed setting says. The
+  routine takes the top 256 KiB of RAM and tells the game it has that much less,
+  which no homebrew I've tried has minded so far.
+- The RSP's registers travel with the state. libdragon's RSP command queue
+  sleeps between commands with its place in a register, so a state of one of these
+  games carries the RSP's scalar registers as well as its memories (state header
+  version 11 and up; older states load as before).
+- A game whose RSP is still working at the frame boundary is held there. A
+  full-screen 3D game never shows a frame boundary with the RSP idle, so the routine
+  waits at one while the RSP's queue runs dry, a few frames at most, until the RSP
+  has put itself to sleep or stands waiting for the CPU to answer an interrupt it
+  raised. The state is taken then, and the interrupts that arrived during the wait
+  are kept for the game: a load raises them again (state header version 12).
+- The ROM identity comes from the contents when the header carries no check
+  code, as libdragon's tools leave it. The state and pak files on the card are named
+  by it, and it is written into the header on the cartridge at launch so the routine
+  can tell the ROM apart the usual way.
+- Debug builds that log over USB share the cartridge's command channel with the
+  routine, so for these ROMs the copy of a state to the card is written while the
+  game is held (a short pause after a save, instead of a copy that runs alongside
+  the game), and the state slots stay below the part of the cartridge memory that
+  libdragon's logging writes into (six slots for a small ROM instead of seven).
+
+I've tested FlappyBird (the N64 port), Kraken64, Legend of Elya, Junk Runner 64, Cathode
+Quest 64, VoidStrider64, Driving Strikers 64, the N64brew Game Jam volleyball game,
+nineteen of the N64brew Game Jam 2025 entries (BotBoy!64, Box Fix Box With Box, Console
+Clash, Crystal Dreams on Death's Wing, DamN64, Somewhere to Escape, Kaiju Response Team
+and its debug build, Moonfish, Mysterious Barricades, Pandemonium, Phazer 64, Plug 'N'
+Repair, Repairman vs Creatures, Robo Renovations, SUGGOMA, Uncharted Terra 2264, the
+untitled racing game, Wizard Critter 64, Wrench Wrangle), and libdragon's hello-world,
+joypad, controller test, Controller Pak, RDP, RSP queue, sprite animation, font, pixel
+shader, mesh viewer, audio player, mixer test, save doodle and OpenGL demo examples,
+logging builds among them. All save and load, with the combos and the panel, at 240 and
+480 lines, take screenshots, and their states reach the card.
+A full-screen 3D game (libdragon's OpenGL demo, Mysterious Barricades, Pandemonium,
+Repairman vs Creatures) keeps the RSP and the RDP busy at every frame; the routine
+holds such a game at the frame boundary until its RSP queue runs dry, a few frames at
+most, and it saves and loads like the rest. A ROM built with libdragon before it had
+its own boot code (2023) boots the retail way and puts its own exception vectors in as
+it starts, so the routine cannot ride along: the menu recognizes that entry code and
+leaves the routine out for such a ROM (Save States, the virtual pak and the screenshot
+button have no effect on it, and the game runs as it always did), and it does the same
+for a libdragon boot code newer than it knows, one whose hand-off it cannot find. (The
+N64brew Game Jam 2024 collection did not start on my console with or without the
+routine, so it says nothing either way.)
 
 ## Known limitations
 
-- **A state does not include the game's own save.** EEPROM, SRAM and FlashRAM
+- A state does not include the game's own save. EEPROM, SRAM and FlashRAM
   saves, and anything in a Controller Pak (virtual or real), keep going forward.
   Loading an old state does not rewind the game's save file, and a game that saved
   after the state was made will find that newer save when the state is loaded.
-- **Slow motion and frame step need the Slow motion option** switched on for the
+- Slow motion and frame step need the Slow motion option switched on for the
   game (see the Game page above); with it on, games that use every byte of the
   Expansion Pak do not boot.
-- **Hi-res modes.** In 480-line modes the panel is drawn shorter, and a state saved
+- A picture kept in the top 128 KiB of RAM (San Francisco Rush 2049's title and
+  menus) is partly in the routine's room: the panel does not open on such a screen,
+  the screenshot button skips it, and a save or load shows the routine's bytes in the
+  picture's bottom rows for its duration.
+- Hi-res modes: In 480-line modes the panel is drawn shorter, and a state saved
   from the panel may show the panel for one frame when it is loaded. The quick
   combos are unaffected.
-- **The panel reads the controller in port 1** and needs a standard controller
+- Homebrew built with libdragon keeps the resident placement; a game whose RSP is
+  still busy at the frame boundary is held there until its queue runs dry before the
+  state is taken; and a ROM from before libdragon's own boot code, or with a boot code
+  newer than the menu knows, runs without the routine (see Compatibility above).
+- The panel reads the controller in port 1 and needs a standard controller
   there.
-- **Freeze length.** Saving copies 8 MiB through the cartridge port at about
+- Screenshots wait in one file on the card until the next visit to the menu, a
+  few hundred per launch, and a screenshot taken while a message is up on a screen
+  the game does not redraw keeps the message.
+- Freeze length: Saving copies 8 MiB through the cartridge port at about
   4 MB/s; the two seconds are what the hardware allows. A load is the same copy in
   the other direction.
-- **A copy to the card interrupted by a power cut empties that slot**, including
+- A copy to the card interrupted by a power cut empties that slot, including
   the state it held before. The alternative, a half-written state that loads,
   is worse. The other slots are untouched.
-- **The virtual pak is port 1 only**, replaces whatever is in that port's accessory
-  slot while it is on, and its file goes to the card a second and a half after the
-  game's last write; a power cut inside that window loses those last writes.
-- **A resume shows the game's boot first.** Suspend's resume waits for the game to
+- The virtual pak replaces whatever is in its port's accessory slot while it is
+  in (a real Controller Pak there would take the game's writes too), a port other
+  than 1 needs a controller in it when the game boots, and its file goes to the card
+  a second and a half after the game's last write; a power cut inside that window
+  loses those last writes.
+- A resume shows the game's boot first. Suspend's resume waits for the game to
   start polling its controller (a second in at least), then for a frame on which the
   RCP is idle; a try that finds none is repeated every three seconds for half a
   minute. So the boot logo, and sometimes a few seconds more, appear before the
   suspended moment does. Exit to menu relies on the SC64's
   own bootloader switch; a cart that refuses it gets "NO EXIT HERE" on the panel,
   with the game untouched.
-- **A few games notice.** Some titles check the memory the boot code leaves behind
+- A few games notice. Some titles check the memory the boot code leaves behind
   or the top of RAM and misbehave with the routine's traces there; the ones found
   so far are listed above.
 - 64DD disk images and the emulators the menu can launch are not supported.
@@ -556,6 +703,28 @@ disarms the engine's watchpoint (libultra 2.0K and later) get that one instructi
 patched out by the menu, and games that keep their code compressed in the ROM and
 unpack it at boot (Mario Tennis, Excitebike 64) get the same patch applied by a
 stub that runs after the unpacking.
+
+Games built with libdragon get in another way. Their boot code is libdragon's own:
+it loads the game's program together with its exception vectors, clears all of RAM
+on its way, and hands over with a single jump. The menu finds that jump in the boot
+code on the cartridge (it occurs exactly once) and points it at a stub kept on the
+cartridge, which puts the boot-time routine back into the RAM the boot code has
+just cleared and runs it as after a retail boot: the game's own exception vector
+moves to the side, the engine's jump takes its place, the memory size the game reads
+from its boot flags is cut by the 256 KiB the routine keeps for itself (the stack
+pointer moves down with it, since libdragon puts the stack at the top of memory), and
+the game starts. No watchpoint is set for these games, as they never rewrite their
+vectors. From there it is the resident placement: the routine lives in that top
+256 KiB for the whole run, and a state carries the RSP's scalar registers as well,
+since libdragon's RSP command queue sleeps between commands with its place in one.
+When a save or a load comes due at a frame boundary where that queue is still
+working (full-screen 3D keeps it busy every frame), the routine holds the game
+there until the queue has run dry and the RSP has put itself to sleep, or until the
+RSP stands in its wait for the CPU to answer an interrupt it raised, which is where
+it resumes from; the interrupts that arrived during the hold belong to the state,
+and a load raises them again.
+A build that logs over USB drives the cartridge's command registers itself, so for
+these ROMs each piece of the copy to the card is written while the game is held.
 
 Everything the routine does with the cartridge goes through the PI bus, which is
 also how the game reads its ROM. It therefore saves and restores the DMA address

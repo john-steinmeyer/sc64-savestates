@@ -100,6 +100,7 @@ static void menu_init (boot_params_t *boot_params) {
     settings_init(path_get(path));
     settings_load(&menu->settings);
     path_pop(path);
+    sc64ss_shots_finish(menu->storage_prefix);   // SC64SS: screenshots taken in the last game, to its folder
 
     path_push(path, MENU_ROM_LOAD_HISTORY_FILE);
     bookkeeping_init(path_get(path));
@@ -229,7 +230,8 @@ static view_t menu_views[] = {
     { MENU_MODE_FAVORITE, view_favorite_init, view_favorite_display },
     { MENU_MODE_HISTORY, view_history_init, view_history_display },
     { MENU_MODE_DATEL_CODE_EDITOR, view_datel_code_editor_init, view_datel_code_editor_display },
-    { MENU_MODE_EXTRACT_FILE, view_extract_file_init, view_extract_file_display }
+    { MENU_MODE_EXTRACT_FILE, view_extract_file_init, view_extract_file_display },
+    { MENU_MODE_HOTKEYS, view_hotkeys_init, view_hotkeys_display },
 };
 
 /**

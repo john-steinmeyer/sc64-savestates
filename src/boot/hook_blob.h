@@ -6,9 +6,9 @@
 
 #define SC64SS_HOOK_ADDRESS (0x807D0000UL)
 #define SC64SS_HOOK_DEV (0)
-#define SC64SS_HOOK_CFG_OFFSET (0x19AA0UL)   /* struct hook_cfg inside the blob */
+#define SC64SS_HOOK_CFG_OFFSET (0x1B3B0UL)   /* struct hook_cfg inside the blob */
 #define SC64SS_HOOK_CFG_MAGIC (0x43464731UL)
-#define SC64SS_HOOK_CFG_WORDS (28)
+#define SC64SS_HOOK_CFG_WORDS (48)
 
 /* cart SDRAM layout shared with the hook (hook.c) */
 #define SC64SS_HOOK_STAGING_PI (0x13F60000UL)   /* cart PI address of the hook's staging copy (128 KiB) */
@@ -35,6 +35,11 @@
 #define SC64SS_STATE_IMAGE_LEN_B (0x800000UL)   /* borrowed mode: the RAM image (all 8 MiB) */
 #define SC64SS_SD_TABLE_OFF_B (0x80F000UL)   /* borrowed mode: the run table inside a slot */
 #define SC64SS_SD_FILE_SECTORS_B (0x4030UL)   /* borrowed mode: sectors of a state file */
+#define SC64SS_SHOT_TABLE_PI (0x13F80000UL)   /* the screenshot file's run table */
+#define SC64SS_SHOT_HDR_PI (0x13F81000UL)   /* the screenshot file's header block (4 KiB) */
+#define SC64SS_SHOT_HDR_SECTORS (0x8UL)   /* the header block's sectors */
+#define SC64SS_SHOT_ENTRIES_MAX (0x1FCUL)   /* screenshots the header block can name */
+#define SC64SS_SD_MAGIC_SHOT (0x53484354UL)   /* a fresh screenshot file's marker 'SHFR' */
 #define SC64SS_HOOK_STAGING_LEN (0x20000UL)
 
 extern const uint32_t sc64ss_hook_blob[];

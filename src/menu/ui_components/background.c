@@ -132,45 +132,45 @@ static void prepare_background(component_background_t *c) {
     rdpq_mode_pop();
     rdpq_detach();
 
-    uint16_t image_center_x = (c->image->width / 2);
-    uint16_t image_center_y = (c->image->height / 2);
+    // SC64SS: the picture scaled to fit the screen, its aspect kept (a 320x240 screenshot
+    // fills a 640x480 menu; whole multiples are drawn sharp, the rest filtered), the bands
+    // beside or above it filled
+    float scale_x = (float) DISPLAY_WIDTH / c->image->width;
+    float scale_y = (float) DISPLAY_HEIGHT / c->image->height;
+    float scale = (scale_x < scale_y) ? scale_x : scale_y;
+    int disp_w = (int) (c->image->width * scale);
+    int disp_h = (int) (c->image->height * scale);
+    int x0 = (DISPLAY_WIDTH - disp_w) / 2;
+    int y0 = (DISPLAY_HEIGHT - disp_h) / 2;
+    bool whole = (scale == (float) (int) scale);
 
     // Prepare display list
     rspq_block_begin();
     rdpq_mode_push();
-        if ((c->image->width != DISPLAY_WIDTH) || (c->image->height != DISPLAY_HEIGHT)) {
+        if ((disp_w != DISPLAY_WIDTH) || (disp_h != DISPLAY_HEIGHT)) {
             rdpq_set_mode_fill(BACKGROUND_EMPTY_COLOR);
         }
-        if (c->image->width != DISPLAY_WIDTH) {
-            rdpq_fill_rectangle(
-                0,
-                DISPLAY_CENTER_Y - image_center_y,
-                DISPLAY_CENTER_X - image_center_x,
-                DISPLAY_CENTER_Y + image_center_y
-            );
-            rdpq_fill_rectangle(
-                DISPLAY_CENTER_X + image_center_x - (c->image->width % 2),
-                DISPLAY_CENTER_Y - image_center_y,
-                DISPLAY_WIDTH,
-                DISPLAY_CENTER_Y + image_center_y
-            );
+        if (disp_w != DISPLAY_WIDTH) {
+            rdpq_fill_rectangle(0, y0, x0, y0 + disp_h);
+            rdpq_fill_rectangle(x0 + disp_w, y0, DISPLAY_WIDTH, y0 + disp_h);
         }
-        if (c->image->height != DISPLAY_HEIGHT) {
-            rdpq_fill_rectangle(
-                0,
-                0,
-                DISPLAY_WIDTH,
-                DISPLAY_CENTER_Y - image_center_y
-            );
-            rdpq_fill_rectangle(
-                0,
-                DISPLAY_CENTER_Y + image_center_y - (c->image->height % 2),
-                DISPLAY_WIDTH,
-                DISPLAY_HEIGHT
-            );
+        if (disp_h != DISPLAY_HEIGHT) {
+            rdpq_fill_rectangle(0, 0, DISPLAY_WIDTH, y0);
+            rdpq_fill_rectangle(0, y0 + disp_h, DISPLAY_WIDTH, DISPLAY_HEIGHT);
         }
-        rdpq_set_mode_copy(false);
-        rdpq_tex_blit(c->image, DISPLAY_CENTER_X - image_center_x, DISPLAY_CENTER_Y - image_center_y, NULL);
+        if (scale == 1.0f) {
+            rdpq_set_mode_copy(false);
+            rdpq_tex_blit(c->image, x0, y0, NULL);
+        } else {
+            rdpq_set_mode_standard();
+            rdpq_mode_filter(whole ? FILTER_POINT : FILTER_BILINEAR);
+            rdpq_mode_combiner(RDPQ_COMBINER_TEX);
+            rdpq_tex_blit(c->image, x0, y0, &(rdpq_blitparms_t) {
+                .scale_x = scale,
+                .scale_y = scale,
+                .filtering = !whole,
+            });
+        }
     rdpq_mode_pop();
     c->image_display_list = rspq_block_end();
 }

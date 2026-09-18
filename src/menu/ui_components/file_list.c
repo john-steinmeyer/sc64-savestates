@@ -27,6 +27,13 @@ static const char *directory_icon = "[DIR] ";
 static rdpq_paragraph_t *file_list_layout_buffer;
 static size_t file_list_layout_capacity;
 
+// SC64SS: the list's text width: narrower while the browser shows a preview beside it
+static int file_list_width = FILE_LIST_MAX_WIDTH;
+
+void ui_components_file_list_set_width (int width) {
+    file_list_width = width ? width : FILE_LIST_MAX_WIDTH;
+}
+
 static rdpq_paragraph_t *file_list_layout_get(size_t required_capacity) {
     if (required_capacity == 0) {
         required_capacity = 1;
@@ -153,7 +160,7 @@ void ui_components_file_list_draw(entry_t *list, int entries, int selected) {
 
         rdpq_paragraph_builder_begin(
             &(rdpq_textparms_t) {
-                .width = FILE_LIST_MAX_WIDTH - (TEXT_MARGIN_HORIZONTAL * 2),
+                .width = file_list_width - (TEXT_MARGIN_HORIZONTAL * 2),
                 .height = LAYOUT_ACTIONS_SEPARATOR_Y - VISIBLE_AREA_Y0  - (TEXT_MARGIN_VERTICAL * 2),
                 .wrap = WRAP_ELLIPSES,
                 .line_spacing = TEXT_LINE_SPACING_ADJUST,

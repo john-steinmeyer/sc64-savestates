@@ -19,6 +19,9 @@
 
 #include <stdint.h>
 
+/* development extras from the routine's live-RAM days (the freeze table, glides, the pak
+ * trace and their mailbox commands): out of the development build too unless asked for,
+ * the blob being within a few KiB of its 128 KiB home */
 
 typedef volatile uint32_t vu32;
 typedef volatile uint16_t vu16;
@@ -74,6 +77,7 @@ typedef volatile uint16_t vu16;
 #define MI_MODE_CLR_DP  (1u << 11)
 #define MI_INTR_SP      (1u << 0)
 #define MI_INTR_DP      (1u << 5)
+#define MI_INTR_AI      (1u << 2)
 #define VI_BASE         0xA4400000u
 #define VI_CURRENT      (*(vu32 *)0xA4400010u)
 #define AI_STATUS       (*(vu32 *)0xA450000Cu)
@@ -87,7 +91,7 @@ typedef volatile uint16_t vu16;
 #define KEY_UNLOCK_1    0x5F554E4Cu
 #define KEY_UNLOCK_2    0x4F434B5Fu
 
-#define HOOK_VERSION    10u /* in every state header: 10 = the RSP's memories and PC as region 1; 9 = the RDP's command pointers and SP_PC (rcp[]); 8 = format v2 (header first); 7 = PI/SI address
+#define HOOK_VERSION    12u /* in every state header: 12 = a moment the hold drained (reraise_sp: RR_HOLD, the lines that came pending in bits 0/1, RR_RSP_RUN = the RSP runs on from its status wait); 11 = the RSP's scalar registers (rsp_gpr: a libdragon game's queue sleeps with its place in them); 10 = the RSP's memories and PC as region 1; 9 = the RDP's command pointers and SP_PC (rcp[]); 8 = format v2 (header first); 7 = PI/SI address
                             * registers, RCP status and the clock carried by the state; 6: the first states */
 
 #define ST_OK           0u
@@ -108,12 +112,17 @@ typedef volatile uint16_t vu16;
  *   0x13F60000 .. 0x13F80000  the hook's staging copy (the boot patcher and the
  *                             reinstall stub copy it into RDRAM; blob <= 128 KiB,
  *                             its RDRAM home 0x807D0000..0x807F0000)
- *   0x13F80000 .. 0x13FB0000  (free: the frame stash once lived here)
+ *   0x13F80000 .. 0x13F81000  the screenshot file's run table (SHOT_TABLE_PI, the menu writes it)
+ *   0x13F81000 .. 0x13F82000  the screenshot file's header block (SHOT_HDR_PI: the menu writes it at
+ *                             launch, the hook keeps its count and entries and copies it to the file)
+ *   0x13F82000 .. 0x13FA0000  (free)
+ *   0x13FA0000 .. 0x13FA3000  a libdragon ROM's boot: the stub, the patcher's copy, the engine's copy (cheats.h)
+ *   0x13FA3000 .. 0x13FB0000  (free)
  *   0x13FB0000 .. 0x13FB8000  the virtual Controller Pak image (32 KiB)
  *   0x13FB8000 .. 0x13FB9000  its SD file's run table (the menu writes it)
  *   0x13FB9000 .. 0x13FB9100  borrowed-RAM mode: the pak's control block (VPAK_CTL_PI)
  *   0x13FBA000 .. 0x13FBE000  borrowed-RAM mode: the monitor, run in place from the cart (16 KiB:
- *                             +0x1000 the pak server, +0x2000 the load epilogue, +0x3000 the installer)
+ *                             +0x1200 the pak server, +0x2200 the load epilogue, +0x3000 the installer)
  *   0x13FBE000 .. 0x13FBE400  borrowed-RAM mode: a loaded state's CPU context for the monitor
  *                             (+0x220 the game's Count/Compare across a borrow)
  *   0x13FC0000 .. 0x13FE0000  borrowed-RAM mode: the stash of the hook's home (128 KiB)
@@ -127,11 +136,19 @@ typedef volatile uint16_t vu16;
                                      * 640x237x2 buffer, so a save from its panel kept the panel).
                                      * The menu stops its slots below this address. */
 #define FRAME_STASH_LEN 0x00140000u
+#define SHOT_TABLE_PI   0x13F80000u  /* the screenshot file's run table, written by the menu */
+#define SHOT_HDR_PI     0x13F81000u  /* its header block (4 KiB): magic, the ROM's check code, count, capacity,
+                                     * fill, then an entry (first sector, length) per screenshot; the menu
+                                     * writes it at launch, the hook updates it and copies it to sector 0 */
+#define SHOT_HDR_SECTORS 8u
+#define SHOT_ENTRIES_MAX 508u        /* (4096 - 32) / 8 */
+#define SD_MAGIC_SHOT   0x53484354u  /* "SHCT": the screenshot file's header (the ROM's check code follows) */
 #define VPAK_PI         0x13FB0000u
 #define VPAK_CTL_PI     0x13FB9000u  /* borrowed mode: the pak's control block (monitor.S PAK_CTL_*): 'VPK1',
-                                     * state, the dirty stamp, the bank byte, the site's scheme, address, words */
-#define MON_PAK_OFF     0x00001000u  /* the monitor's pak server (monitor.ld .pak): the RAM stub jumps there */
-#define MON_EPIL_OFF    0x00002000u  /* the monitor's load epilogue (mon_epi_load): borrow_load_exit jumps there */
+                                     * state, the dirty stamp, the bank byte, the site's scheme, address, words,
+                                     * and at +0x38 the live word: the port, inserted or not (PAK_LIVE_*) */
+#define MON_PAK_OFF     0x00001200u  /* the monitor's pak server (monitor.ld .pak): the RAM stub jumps there */
+#define MON_EPIL_OFF    0x00002200u  /* the monitor's load epilogue (mon_epi_load): borrow_load_exit jumps there */
 #define PAK_STUB_ADDR   0x80000060u  /* the stub's home in the vector page: 8 words, 0x060..0x080 */
 /* borrowed-RAM mode (games that use all 8 MiB): the monitor runs in place from the
  * cart; the hook's 128 KiB home is stashed here for the length of one action */
@@ -180,6 +197,9 @@ static uint32_t st_pending;           /* v6: a save/load waiting for a clean int
 static uint32_t speed_div = 1;        /* slow motion: fields per game frame (1 normal; SPEED_STEP = frame step) */
 static uint32_t speed_sel = 0;        /* the panel's choice, index into its table */
 static uint32_t step_prev = 0xFFFFu;  /* frame step: the last pad word our own poll saw */
+static uint32_t step_run = 0;         /* frame step: ticks the game has run for the step in progress (0: held) */
+static uint32_t step_origin = 0;      /* ... and the displayed buffer when it began */
+static uint32_t step_held = 0;        /* polls the step button has been held (hold-to-repeat) */
 static uint32_t slow_sound = 0;       /* slow motion sound: 0 pitch down (the DAC slowed with the game), 1 leave it (gaps) */
 
 
@@ -276,6 +296,21 @@ static uint32_t vi_frz_active = 0, vi_frz_base0 = 0;
 static uint32_t vi_frz_prev = 0;              /* last line seen while frozen (wrap = new field) */
 static uint32_t vi_frz_count = 0;             /* fields aimed during the current freeze */
 static uint32_t frz_count0 = 0, frz_compare0 = 0;   /* the game's clock when the freeze began */
+/* v12: the hold (state_hold). A vblank moment drained of the RSP's and RDP's work: the lines
+ * that came pending meanwhile, for the header, and the game's clock at the hold's start,
+ * which the freeze hands back as if the hold were part of it. */
+#define RR_SP           1u          /* re-raise the SP line (alone: the moment was the SP's) */
+#define RR_DP           2u          /* re-raise the DP line (alone: the moment was the DP's) */
+#define RR_HOLD         0x10u       /* a VI moment the hold drained; bits 0/1 came pending during it */
+#define RR_RSP_RUN      0x20u       /* the RSP stood in its status wait: it runs on from the wait's first word */
+#define HOLD_TICKS      (46875u * 90u)   /* the hold at most: five and a half frames */
+#define HOLD_SIG_TICKS  (46875u * 4u)    /* a status wait this long, with its line pending, is for the CPU */
+#define HOLD_TRIES      4u          /* holds per request; then the plain wait runs out as before */
+static uint32_t st_hold = 0;         /* RR_* of the moment being taken (0: no hold) */
+static uint32_t st_hold_tries = 0;
+static uint32_t hold_clock = 0, hold_count0 = 0, hold_compare0 = 0;
+static uint32_t rsp_loop_pc = 0;     /* the RSP halted by the hold inside its status wait: the wait's first word */
+static uint32_t vi_frz_ended = 0;                    /* a freeze ended in this tick: align the resume */
 static uint32_t dbg_vi_tick = 0, dbg_vi_flip = 0, dbg_vi_wrap = 0, dbg_vi_intr = 0, dbg_vi_lastbit = 0;   /* probes */
 
 static uint32_t vi_line_bytes(uint32_t ctrl) {
@@ -355,8 +390,8 @@ static void vi_frz_service(void) {
 static void vi_frz_begin(uint32_t at_vi) {
     uint32_t ctrl = *(vu32 *)VI_BASE;
     vi_frz_frozen = 1;
-    frz_count0 = c0_count();
-    frz_compare0 = c0_compare();
+    frz_count0 = hold_clock ? hold_count0 : c0_count();     /* a held moment: the clock at the hold's start */
+    frz_compare0 = hold_clock ? hold_compare0 : c0_compare();
     vi_frz_active = 0;
     vi_frz_base0 = 0;
     vi_frz_count = 0;
@@ -423,6 +458,7 @@ static void vi_frz_end(void) {
     vi_frz_frozen = 0;
     vi_frz_active = 0;
     vi_frz_base0 = 0;
+    vi_frz_ended = 1u;
 }
 
 /* Wait for the PI bus to go idle. PI_STATUS itself is an RCP register and is
@@ -500,6 +536,7 @@ static void crumb(uint32_t stage, uint32_t a, uint32_t b) {
     pio_write(BRAM_BASE + CRUMB_BASE + 0x14, c0_count());
 }
 
+
 /* Always replay the unlock sequence (idempotent when already unlocked, and
  * the register block reads as nothing while locked), then verify. */
 static uint32_t ensure_unlocked(void) {
@@ -575,7 +612,6 @@ static void dcache_writeback_all(void) {
 #define STATE_OP_SAVE   1u
 #define STATE_OP_LOAD   2u
 #define STATE_OP_QUERY  3u
-#define STATE_OP_OVTEST 8u   /* dev: overlay experiment */
 #define STATE_MAGIC     0x53543634u /* "ST64" */
 #define STATE_FMT       2u          /* v2: header first; the loader accepts any version >= 2 it can restore */
 #define STATE_IMAGE_BASE 0x80000000u
@@ -625,8 +661,10 @@ struct state_hdr {                        /* everything a reader needs is in the
     struct state_ctx ctx;                                 /* 0xC0 */
     struct { uint32_t kind, off, len, arg; } regions[8];  /* 0x4E0: extra regions in the file (none defined yet) */
     uint32_t rcp[8];                                      /* 0x560: v9: DPC_START, DPC_END, DPC_CURRENT, SP_PC at the moment, then zeros */
-    uint8_t pad[0x1000u - 0x580u];
+    uint32_t rsp_gpr[32];                                 /* 0x580: v11: the RSP's scalar registers 1..31 at the moment, [0] = RSP_GPR_MAGIC when taken */
+    uint8_t pad[0x1000u - 0x600u];
 };
+#define RSP_GPR_MAGIC   0x52535047u   /* "RSPG" */
 
 _Static_assert(sizeof(struct state_ctx) == 0x420u, "state_ctx layout");
 _Static_assert(__builtin_offsetof(struct state_ctx, fpr) == 0x110u, "state_ctx fpr");
@@ -637,6 +675,7 @@ _Static_assert(__builtin_offsetof(struct state_hdr, vi) == 0x80u, "state_hdr vi"
 _Static_assert(__builtin_offsetof(struct state_hdr, ctx) == 0xC0u, "state_hdr ctx");
 _Static_assert(__builtin_offsetof(struct state_hdr, regions) == 0x4E0u, "state_hdr regions");
 _Static_assert(__builtin_offsetof(struct state_hdr, rcp) == 0x560u, "state_hdr rcp");
+_Static_assert(__builtin_offsetof(struct state_hdr, rsp_gpr) == 0x580u, "state_hdr rsp_gpr");
 _Static_assert(sizeof(struct state_hdr) == 0x1000u, "state_hdr size");
 
 extern uint64_t save_area[32];   /* entry.S: the interrupted GPRs (see save_map), then lo, hi */
@@ -646,7 +685,6 @@ extern void tlb_restore(const struct state_ctx *ctx);
 extern void state_resume(const struct state_ctx *ctx) __attribute__((noreturn));
 
 static struct state_hdr st_hdr __attribute__((aligned(16))) = {0};     /* initialised: keeps it out of .bss */
-static struct state_ctx st_live __attribute__((aligned(16))) = {.gpr = {0}};
 static uint32_t st_pending = 0;      /* STATE_OP_SAVE / STATE_OP_LOAD waiting for a clean interrupt */
 static uint32_t st_slot = 0;         /* cart PI address of the slot */
 static uint32_t st_seq = 0;
@@ -667,6 +705,16 @@ static uint32_t sd_state;
 static uint32_t sd_read_slot(uint32_t slot_base);
 static uint32_t sd_write_begin(uint32_t slot_base);
 static uint32_t sd_write_begin_head(uint32_t slot_base);   /* the header's sectors only */
+static uint32_t sd_write_begin_shot(uint32_t len);   /* a screenshot from the frame stash, appended to the screenshot file */
+static void shot_request(void);                              /* the screenshot button was tapped */
+static uint32_t shot_state = 0;      /* 1: a screenshot is asked for (taken at the next fresh frame) */
+static uint32_t shot_ticks = 0;      /* VI ticks it has waited for one */
+static uint32_t shot_len = 0;        /* the PNG's length in the frame stash */
+static uint32_t shot_fill0 = 0;      /* hook_cfg.shot_fill and shot_count before the write in flight ... */
+static uint32_t shot_count0 = 0;     /* ... (put back when it fails) */
+static uint32_t sd_kind = 0;         /* what the SD mirror is writing: 0 a state, 1 a screenshot */
+static uint32_t sd_shot_pending = 0; /* a screenshot's copy waits behind a state's ... */
+static uint32_t sd_shot_len = 0;     /* ... and its length */
 static void pif_poll_block_send(void);         /* the standard poll block into the PIF (after a load) */
 static uint32_t sd_pending_slot;              /* a state mirror waiting for the pak's to finish */
 static uint32_t st_suspend = 0;               /* the state being saved is a suspend: the next launch resumes it */
@@ -782,7 +830,7 @@ static void state_capture(uint32_t cause, uint32_t mi) {
     uint32_t clk_compare = vi_frz_frozen ? frz_compare0 : c0_compare();
     h->compare_delta = clk_compare - clk_count;
     h->mi_mask = MI_INTR_MASK & 0x3Fu;
-    h->reraise_sp = (mi == MI_INTR_SP) ? 1u : ((mi == MI_INTR_DP) ? 2u : 0u);
+    h->reraise_sp = st_hold ? st_hold : ((mi == MI_INTR_SP) ? RR_SP : ((mi == MI_INTR_DP) ? RR_DP : 0u));
     h->memsize = *(vu32 *)0x80000318u;
     h->hook_version = HOOK_VERSION;
     for (uint32_t i = 0; i < 14u; i++) {
@@ -853,6 +901,14 @@ static uint32_t zero_sector[128] __attribute__((aligned(16))) = {0};
 /* the RSP's memories, one 4 KiB half at a time through this buffer (the RSP is halted
  * at any moment a save or a load takes, so the CPU may touch them) */
 static uint32_t st_spmem[1024] __attribute__((aligned(16))) = {0};
+/* Its 4 KiB serve in turn (the blob is short of room): the live context a load compares
+ * TLBs through, after the memories went in; the RSP stub's program and the words it
+ * displaces, which a save uses before the memories are read and a load after they went
+ * in. Never two at once. */
+#define st_live             (*(struct state_ctx *)(void *)st_spmem)   /* 0x420 bytes at 0 */
+#define rsp_stub_prog       (st_spmem + 0x120u)                         /* 40 words at 0x480 */
+#define rsp_stub_imem_save  (st_spmem + 0x148u)                         /* 40 words at 0x520 */
+#define rsp_stub_dmem_save  (st_spmem + 0x170u)                         /* 32 words at 0x5C0 */
 
 static uint32_t rsp_mem_save(uint32_t cart) {
     for (uint32_t half = 0; half < 2u; half++) {
@@ -879,6 +935,138 @@ static uint32_t rsp_mem_load(uint32_t cart) {
     return 1u;
 }
 
+/* The RSP's scalar registers. A libdragon game's RSP queue sleeps between commands with
+ * its reading position in a register, so a load that puts back the RSP's memories and PC
+ * alone wakes it off its place (its command queue then waits forever). The registers are
+ * out of the CPU's reach, but the halted RSP can run a few words of ours: a program in the
+ * last 160 bytes of IMEM that stores (or loads) them through the last 128 bytes of DMEM and
+ * breaks. Both areas and the PC are put back afterwards; the interrupt-on-break and broke
+ * flags are left to the caller (the load's own restore sets them from the saved world). */
+#define RSP_STUB_IMEM   0x0F60u
+#define RSP_STUB_DMEM   0x0F80u
+#define RSP_STUB_WORDS  40u
+
+static uint32_t rsp_stub_run(void) {
+    vu32 *imem = (vu32 *)(0xA4001000u + RSP_STUB_IMEM);
+    uint32_t pc = SP_PC_REG & 0xFFCu;
+    uint32_t sr = SP_STATUS;
+    if (!(sr & SP_HALT) || (sr & (SP_DMA_BUSY | SP_DMA_FULL))) {
+        return 0;
+    }
+    /* The RSP's first fetches after an un-halt are not to be trusted (libdragon's queue
+     * code is arranged around that), and a halt leaves the pipeline as the break found
+     * it: so end through the game's own break when one sits right before its PC, which
+     * parks the RSP exactly as the game did. Otherwise a break of ours. */
+    uint32_t n = RSP_STUB_WORDS - 4u;
+    uint32_t brk = pc - 4u;
+    if ((pc >= 4u) && (*(vu32 *)(0xA4001000u + brk) == 0x0000000Du) && (brk < RSP_STUB_IMEM)) {
+        rsp_stub_prog[n++] = 0x08000000u | (brk >> 2);   /* j: the game's break */
+        rsp_stub_prog[n++] = 0;
+    } else {
+        rsp_stub_prog[n++] = 0x0000000Du;
+        rsp_stub_prog[n++] = 0;
+    }
+    for (uint32_t i = 0; i < RSP_STUB_WORDS; i++) {
+        rsp_stub_imem_save[i] = imem[i];
+        imem[i] = rsp_stub_prog[i];
+    }
+    SP_STATUS = (1u << 7) | (1u << 5) | (1u << 2);   /* no interrupt on break, no single step, broke cleared */
+    SP_PC_REG = RSP_STUB_IMEM;
+    SP_STATUS = SP_HALT;                              /* (write bit 0: clear halt, run) */
+    uint32_t t0 = c0_count();
+    uint32_t ok = 0;
+    while ((c0_count() - t0) < 46875u * 2u) {         /* 2 ms; the program takes under a microsecond */
+        if (SP_STATUS & SP_HALT) {
+            ok = 1u;
+            break;
+        }
+    }
+    if (!ok) {
+        SP_STATUS = 2u;                               /* halt it regardless */
+        t0 = c0_count();
+        while (!(SP_STATUS & SP_HALT) && ((c0_count() - t0) < 46875u * 2u)) {
+        }
+    }
+    for (uint32_t i = 0; i < RSP_STUB_WORDS; i++) {
+        imem[i] = rsp_stub_imem_save[i];
+    }
+    SP_PC_REG = pc;
+    return ok;
+}
+
+/* the program: two nops (the RSP's first fetches after an un-halt are not to be trusted),
+ * one store or load per register 1..31 through DMEM, a break, nops */
+static void rsp_stub_build(uint32_t store) {
+    uint32_t n = 0;
+    rsp_stub_prog[n++] = 0;
+    rsp_stub_prog[n++] = 0;
+    for (uint32_t r = 1u; r < 32u; r++) {
+        rsp_stub_prog[n++] = (store ? 0xAC000000u : 0x8C000000u) | (r << 16) | (RSP_STUB_DMEM + 4u * r);
+    }
+    while (n < RSP_STUB_WORDS) {
+        rsp_stub_prog[n++] = 0;                       /* (the ending goes in at run time) */
+    }
+}
+
+static uint32_t rsp_regs_save(uint32_t *out) {
+    vu32 *dmem = (vu32 *)(0xA4000000u + RSP_STUB_DMEM);
+    uint32_t sr = SP_STATUS;
+    for (uint32_t i = 0; i < 32u; i++) {
+        rsp_stub_dmem_save[i] = dmem[i];
+    }
+    rsp_stub_build(1u);
+    uint32_t ok = rsp_stub_run();
+    out[0] = 0;
+    for (uint32_t r = 1u; r < 32u; r++) {
+        out[r] = dmem[r];
+    }
+    for (uint32_t i = 0; i < 32u; i++) {
+        dmem[i] = rsp_stub_dmem_save[i];
+    }
+    /* the flags as the game left them: interrupt on break, and broke (our break set it) */
+    SP_STATUS = (sr & 0x40u) ? (1u << 8) : (1u << 7);
+    if (!(sr & 0x2u)) {
+        SP_STATUS = 1u << 2;
+    }
+    return ok;
+}
+
+static uint32_t rsp_regs_load(const uint32_t *in) {
+    vu32 *dmem = (vu32 *)(0xA4000000u + RSP_STUB_DMEM);
+    for (uint32_t i = 0; i < 32u; i++) {
+        rsp_stub_dmem_save[i] = dmem[i];
+    }
+    dmem[0] = 0;
+    for (uint32_t r = 1u; r < 32u; r++) {
+        dmem[r] = in[r];
+    }
+    rsp_stub_build(0);
+    uint32_t ok = rsp_stub_run();
+    for (uint32_t i = 0; i < 32u; i++) {
+        dmem[i] = rsp_stub_dmem_save[i];
+    }
+    return ok;
+}
+
+/* The ROM's boot code is libdragon's: its banner sits 16-byte aligned in the IPL3. */
+static uint32_t rom_libdragon = 0;   /* 0 not looked yet, 1 no, 2 yes */
+static uint32_t rom_is_libdragon(void) {
+    if (rom_libdragon == 0) {
+        rom_libdragon = 1u;
+        for (uint32_t off = 0x40u; off < 0x1000u; off += 16u) {
+            uint32_t a = 0, b = 0;
+            if (!pio_read(0xB0000000u + off, &a)) break;
+            if (a != 0x204C6962u) continue;                /* " Lib" */
+            if (!pio_read(0xB0000000u + off + 4u, &b)) break;
+            if (b == 0x64726167u) {                        /* "drag" */
+                rom_libdragon = 2u;
+                break;
+            }
+        }
+    }
+    return rom_libdragon == 2u;
+}
+
 static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
     state_capture(cause, mi);
     dcache_writeback_all();
@@ -895,6 +1083,11 @@ static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
             }
         }
     }
+    /* v11: a libdragon game's RSP registers (before the memories, which the stub borrows) */
+    st_hdr.rsp_gpr[0] = 0;
+    if (rom_is_libdragon() && rsp_regs_save(st_hdr.rsp_gpr)) {
+        st_hdr.rsp_gpr[0] = RSP_GPR_MAGIC;
+    }
     /* v10: the RSP's memories and PC, right after the image (region 1) */
     {
         uint32_t roff = STATE_IMAGE_OFF + ilen;
@@ -904,7 +1097,7 @@ static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
         st_hdr.regions[0].kind = REGION_RSP;
         st_hdr.regions[0].off = roff;
         st_hdr.regions[0].len = STATE_RSP_LEN;
-        st_hdr.regions[0].arg = SP_PC_REG;
+        st_hdr.regions[0].arg = rsp_loop_pc ? rsp_loop_pc : SP_PC_REG;   /* v12: a status wait resumes from its first word */
         st_hdr.regions_n = 1u;
     }
     /* the head: thumbnail, the zeroed sector for the mirror, then the header last */
@@ -1039,6 +1232,10 @@ static uint32_t state_do_load_body(void) {
             return ST_DMA_FAIL;
         }
         SP_PC_REG = h->regions[0].arg;
+        if ((h->hook_version >= 11u) && (h->rsp_gpr[0] == RSP_GPR_MAGIC)) {
+            rsp_regs_load(h->rsp_gpr);    /* (the RSP is halted at that PC again afterwards) */
+        }
+        rsp_loop_pc = 0;                  /* v12: the RSP the hold halted is the loaded world's now */
     }
     icache_invalidate_all();
     return ST_OK;
@@ -1074,15 +1271,21 @@ static void state_finish_load(void) {
     PI_STATUS = PI_STATUS_W_CLR_INTR;
     SI_STATUS = 0;
     AI_STATUS = 0;
-    if (h->reraise_sp != 0u) {
+    /* v12: a held moment is the VI's, with the lines that came pending during the hold
+     * (RR_HOLD with bits 0/1); an older state's 1 or 2 is an SP or DP moment alone */
+    uint32_t rr = h->reraise_sp;
+    uint32_t sp_raise = (rr & RR_SP) != 0u;
+    uint32_t dp_raise = (rr & RR_DP) != 0u;
+    if ((rr != 0u) && !(rr & RR_HOLD)) {
         VI_CURRENT = 0;               /* an SP/DP moment: no VI event belongs to it */
     }
     /* a VI moment keeps the VI interrupt pending (nothing cleared it during the
      * freeze, and vi_frz_end ends at the next one): the restored VI manager runs
      * at once and aims the field, instead of a field later with stale timing */
-    if (h->reraise_sp == 1u) {
+    if (sp_raise) {
         SP_STATUS = SP_SET_INTR;
-    } else if (h->reraise_sp == 2u) {
+    }
+    if (dp_raise) {
         /* the snapshot was taken on the RDP-done interrupt: have the idle RDP retire a
          * full sync from RDRAM so the same interrupt arrives in the restored world */
         __asm__ volatile("cache 0x19, 0(%0)" : : "r"(st_sync_cmd) : "memory");   /* Hit_Writeback_D */
@@ -1120,8 +1323,12 @@ static void state_finish_load(void) {
             SP_STATUS = w;
         }
     }
-    if ((h->hook_version >= 9u) && !(h->reserved[3] & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) &&
-        (h->rcp[2] == h->rcp[1])) {
+    /* v12: for a libdragon game the pipe flag says nothing about the position (it stays up
+     * after any list without a full sync, and a held moment with the RSP in its status
+     * wait has one: Mysterious Barricades' RDP was left at this boot's place, its next
+     * list ran from there and the game died at once) */
+    uint32_t rdp_busy = rom_is_libdragon() ? (DPC_CMD_BUSY | DPC_DMA_BUSY) : (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY);
+    if ((h->hook_version >= 9u) && !(h->reserved[3] & rdp_busy) && (h->rcp[2] == h->rcp[1])) {
         /* v9: the RDP's command pointers. The saved world's RDP was idle at rcp[1]; a
          * gfx task yielded for audio resumes its command ring from there and only ever
          * writes DPC_END, so the RDP must sit where the saved world left it, not where
@@ -1157,16 +1364,30 @@ static void state_finish_load(void) {
             uint32_t t0 = c0_count();
             while ((DPC_STATUS & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) && ((c0_count() - t0) < 46875u * 20u)) {
             }
-            if (h->reraise_sp != 2u) {
+            if (!dp_raise) {
                 MI_INIT_MODE = MI_MODE_CLR_DP;
             }
             if (dpc0 & 2u) {
                 DPC_STATUS = 8u;
             }
+        } else if (rom_is_libdragon() && !(dpc0 & 1u) && (h->rcp[1] >= 8u) && (h->rcp[1] <= h->memsize)) {
+            /* libdragon's RSP queue appends to the RDP's list by writing DPC_END alone,
+             * from the position its own copy says the list ended at, and trusts the
+             * RDP's CURRENT to be there. So the RDP must sit at the saved end even
+             * without a full sync to run again: BotBoy!64's RDP was left at this boot's
+             * later position, the first end pointer written after the load fell short
+             * of it, and the RDP ran on through memory until it hung. The empty list
+             * sets the position (libdragon's own init stores its first buffer this
+             * way); the pipe-busy flag it leaves is one libdragon never waits on. */
+            DPC_START = h->rcp[1];
+            DPC_END = h->rcp[1];
+            uint32_t t0 = c0_count();
+            while ((DPC_STATUS & 0x600u) && ((c0_count() - t0) < 46875u)) {   /* START/END_VALID */
+            }
         }
-        /* No full sync there: the pointers are stale (Rayman 2's pointed into a
-         * framebuffer) and the empty kick would only leave the pipe busy: the RDP
-         * keeps this boot's position. */
+        /* No full sync there (and not libdragon): the pointers are stale (Rayman 2's
+         * pointed into a framebuffer) and the empty kick would only leave the pipe
+         * busy: the RDP keeps this boot's position. */
     }
     /* The feedback text is drawn into the framebuffers the hook has seen. Those
      * belong to the world being replaced: after a load from GoldenEye's main menu
@@ -1207,6 +1428,12 @@ static void state_finish_load(void) {
     } else {
         c0_set_compare(c0_count() + h->compare_delta);
     }
+    if (rr & RR_RSP_RUN) {
+        /* v12: the RSP stood in its status wait for the CPU to service the full sync or
+         * the syncpoint re-raised above: on it goes from the wait's first word (region 1
+         * put that PC in), and the restored handlers clear the signals it waits on */
+        SP_STATUS = 1u;               /* clear halt */
+    }
     tlb_save(&st_live);
     uint32_t same = 1;
     for (uint32_t i = 0; i < 32u; i++) {
@@ -1243,13 +1470,186 @@ static void state_resume_flag_clear(void) {
     crumb(18u, st_slot, sd_state);
 }
 
+static void hold_release(void) {
+    if (rsp_loop_pc) {
+        SP_PC_REG = rsp_loop_pc;      /* (a write starts the pipeline clean: the wait begins over) */
+        SP_STATUS = 1u;               /* clear halt */
+        rsp_loop_pc = 0;
+    }
+    st_hold = 0;
+    hold_clock = 0;
+}
+
 static void state_done(uint32_t status) {
     vi_frz_end();                 /* every freeze ends here or just before state_finish_load */
+    hold_release();               /* v12: the RSP the hold halted in its status wait runs on */
     st_last_op = st_pending;
     st_last_status = status;
     st_last_dma = st_dma_ticks;
     st_last_wait = st_wait;
     st_pending = 0;
+}
+
+/* The resumed game takes its VI interrupt within the vblank. The freeze ended on the
+ * interrupt line, but a load's restores or a chunk of the mirror follow it, and the beam
+ * is down the frame by the time the game's handler runs (half-line 166 on one load): the
+ * frame it programs shows a field late, and a libdragon debug build prints a warning over
+ * USB from inside that handler, the print stalling it into the next late interrupt (the
+ * mixer test's display wait timed out on that). So the same wait once more, last: the
+ * counter's wrap and the interrupt line, at most one frame. Resident placement only: the
+ * borrowed epilogue has frames of copying still to do after this. */
+static void vi_resume_align(void) {
+    vi_frz_ended = 0;
+    if (!((*(vu32 *)VI_BASE) & 3u) || borrowed_mode()) return;
+    uint32_t intr = (vi_fld[0][3] & 0x3FFu) >> 1;
+    uint32_t line = VI_CURRENT >> 1;
+    if ((line >= intr) && (line <= (intr + 3u))) return;    /* on it already */
+    uint32_t t0 = c0_count(), prev = line;
+    while ((c0_count() - t0) < (46875u * 18u)) {
+        line = VI_CURRENT >> 1;
+        if (line < prev) {
+            vi_wait_intr_line();
+            return;
+        }
+        prev = line;
+    }
+}
+
+/* libdragon's status wait (rsp_dma.inc, SpStatusWait / DMAWaitLoop): mfc0 $1,status; and
+ * $1,t2; bnez $1,-2; mfc0 $1,status in the delay slot; then jr ra. Halted inside it (words
+ * 1..3), the RSP takes the wait up again from word 0 whatever its pipeline held (a write to
+ * its PC starts it clean). Returns word 0's IMEM address, or 0. */
+static uint32_t rsp_wait_loop(uint32_t pc) {
+    const vu32 *imem = (const vu32 *)0xA4001000u;
+    for (uint32_t back = 4u; back <= 12u; back += 4u) {
+        if (pc < back) {
+            break;
+        }
+        uint32_t top = pc - back;
+        if ((top + 16u) > 0x1000u) {
+            continue;
+        }
+        uint32_t w0 = imem[top >> 2];
+        if (((w0 & 0xFFE0FFFFu) != 0x40002000u) ||                        /* mfc0 rt, $4 (the status) */
+            ((imem[(top >> 2) + 1u] & 0xFC00003Fu) != 0x00000024u) ||      /* and */
+            ((imem[(top >> 2) + 2u] & 0xFC1FFFFFu) != 0x1400FFFEu) ||      /* bne rs, zero, -2 */
+            (imem[(top >> 2) + 3u] != w0)) {
+            continue;
+        }
+        return top;
+    }
+    return 0;
+}
+
+/* v12: the hold. libdragon's RSP queue runs the RDP and, its queue empty, halts itself (a
+ * break: RSPQCmd_WaitNewInput), so a game whose RSP is busy at every vblank (full-screen
+ * 3D: the GL demo, three of the jam's entries) never showed a clean moment. At such a
+ * vblank the CPU stays here while the RSP works its queue down and the RDP finishes. The
+ * RSP ends halted, or standing in its status wait for the CPU to service the full sync or
+ * the syncpoint it raised (it raises no second one before, so that wait cannot end while
+ * the CPU is here): halted there by us, it takes the wait up from its first word, in the
+ * saved world and in this one. The lines that came pending meanwhile are the header's to
+ * re-raise on a load (the sync's DP, the syncpoint's SP; the AI's refill is the load's
+ * silence; a Compare match comes again from the clock the freeze hands back, the hold's
+ * start). Not with the PI or SI pending at the end (no re-raise for those), nor with any
+ * other line: then the next vblank. Returns 1 with st_hold set. */
+static uint32_t state_hold(void) {
+    uint32_t t0 = c0_count(), t_sig = 0, ok = 0, halted = 0;
+    hold_count0 = t0;
+    hold_compare0 = c0_compare();
+    rsp_loop_pc = 0;
+    while ((c0_count() - t0) < HOLD_TICKS) {
+        uint32_t sp = SP_STATUS;
+        uint32_t dp = DPC_STATUS;
+        if ((sp & (SP_DMA_BUSY | SP_DMA_FULL)) || (dp & (DPC_CMD_BUSY | DPC_DMA_BUSY))) {
+            t_sig = 0;
+            continue;
+        }
+        if (sp & SP_HALT) {
+            ok = 1u;                                      /* asleep on its own */
+            break;
+        }
+        uint32_t mi = MI_INTERRUPT & MI_INTR_MASK & 0x3Fu;
+        if (!(sp & 0x380u) || !(mi & (MI_INTR_SP | MI_INTR_DP))) {   /* signals 0..2 are the CPU's to clear */
+            t_sig = 0;
+            continue;
+        }
+        if (t_sig == 0) {
+            t_sig = c0_count() | 1u;
+            continue;
+        }
+        if ((c0_count() - t_sig) < HOLD_SIG_TICKS) {
+            continue;
+        }
+        /* a status wait by all signs: halt it and look */
+        SP_STATUS = 2u;                                   /* set halt */
+        uint32_t t1 = c0_count();
+        while ((!(SP_STATUS & SP_HALT) || (SP_STATUS & (SP_DMA_BUSY | SP_DMA_FULL))) && ((c0_count() - t1) < 46875u)) {
+        }
+        if (SP_STATUS & SP_HALT) {
+            uint32_t top = rsp_wait_loop(SP_PC_REG & 0xFFCu);
+            if (top) {
+                rsp_loop_pc = top;
+                halted = 1u;
+                ok = 1u;
+                break;
+            }
+            SP_STATUS = 1u;                               /* elsewhere: on it goes */
+        }
+        t_sig = 0;
+    }
+    uint32_t mi = 0, ip = 0;
+    if (ok) {
+        /* the PI and SI finish what they had (a DMA of the game's: milliseconds) */
+        uint32_t t1 = c0_count();
+        while (((PI_STATUS & 3u) || (SI_STATUS & 3u)) && ((c0_count() - t1) < (46875u * 20u))) {
+        }
+        /* the freeze begins where a VI interrupt would be handled: the counter's wrap, then
+         * the line (the lines are read after this: a full sync the RSP sent last retires
+         * from the pipe microseconds after the command flags clear, and its interrupt
+         * belongs to the moment; Repairman vs Creatures lost it and its RSP waited for a
+         * service that never came) */
+        if ((*(vu32 *)VI_BASE) & 3u) {
+            uint32_t prev = VI_CURRENT >> 1;
+            t1 = c0_count();
+            while ((c0_count() - t1) < (46875u * 18u)) {
+                uint32_t line = VI_CURRENT >> 1;
+                if (line < prev) {
+                    vi_wait_intr_line();
+                    break;
+                }
+                prev = line;
+            }
+        }
+        t1 = c0_count();
+        while ((DPC_STATUS & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) && ((c0_count() - t1) < (46875u * 2u))) {
+        }                                                 /* (a list without a full sync keeps the pipe flag: 2 ms at most) */
+        mi = MI_INTERRUPT & MI_INTR_MASK & 0x3Fu;
+        ip = c0_cause() & 0xFF00u;
+        if (!(c0_status() & (1u << 15))) {
+            ip &= ~(1u << 15);
+        }
+        if ((PI_STATUS & 3u) || (SI_STATUS & 3u) || (mi & ~(MI_INTR_VI | MI_INTR_SP | MI_INTR_DP | MI_INTR_AI)) ||
+            (ip & ~(CAUSE_IP2_RCP | (1u << 15)))) {
+            ok = 0;
+        }
+    }
+    if (!ok) {
+        if (halted) {
+            SP_PC_REG = rsp_loop_pc;
+            SP_STATUS = 1u;
+            rsp_loop_pc = 0;
+        }
+        crumb(20u, c0_count() - t0, (SP_STATUS << 16) | (mi << 8) | (ip >> 8));
+        return 0;
+    }
+    if ((ip & (1u << 15)) && ((hold_compare0 - hold_count0) < 1024u)) {
+        hold_count0 = hold_compare0 - 1024u;              /* the match fell within the handler's own microseconds: it comes again */
+    }
+    st_hold = RR_HOLD | ((mi & MI_INTR_SP) ? RR_SP : 0u) | ((mi & MI_INTR_DP) ? RR_DP : 0u) | (halted ? RR_RSP_RUN : 0u);
+    hold_clock = 1u;
+    crumb(19u, c0_count() - t0, (rsp_loop_pc << 16) | (mi << 8) | st_hold);
+    return 1u;
 }
 
 /* Every exception: a pending save/load takes the first clean RCP interrupt. */
@@ -1281,14 +1681,17 @@ static void state_service(uint32_t cause) {
      * (tens of milliseconds, in which the next VI and the AI's buffer swaps arrive: the
      * live bits would never again read as one interrupt, and every borrow timed out
      * unless it began on a VI with no audio swap due) */
-    uint32_t mi = borrowed_mode() ? borrow_mi : (MI_INTERRUPT & 0x3Fu);
+    /* only the interrupts the game has enabled count: one it masks and polls instead
+     * (libdragon leaves the PI's pending for good) is no event the frozen world would
+     * lose */
+    uint32_t mi = (borrowed_mode() ? borrow_mi : MI_INTERRUPT) & MI_INTR_MASK & 0x3Fu;
     st_dbg[9] = mi;
     if ((mi != MI_INTR_VI) && (mi != MI_INTR_SP) && (mi != MI_INTR_DP)) {
         st_dbg[3]++;
         return;
     }
-    if (mi == MI_INTR_VI) {
-        st_wait++;
+    if (mi & MI_INTR_VI) {
+        st_wait++;                                /* (every frame counts, so the wait can end) */
     }
     uint32_t sp = SP_STATUS;
     uint32_t dp = DPC_STATUS;
@@ -1299,7 +1702,10 @@ static void state_service(uint32_t cause) {
         st_dbg[4]++;
         bad = 1;
     }
-    if (dp & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) {
+    /* pipe busy alone does not count: the RDP keeps that flag up after its last command
+     * until a full sync, and a libdragon game ends its frames without one (it stood at
+     * every tick of an audio player with nothing left to draw) */
+    if (dp & (DPC_CMD_BUSY | DPC_DMA_BUSY)) {
         st_dbg[5]++;
         bad = 1;
     }
@@ -1309,6 +1715,13 @@ static void state_service(uint32_t cause) {
     }
     if (snap_active) {
         bad = 1;
+    }
+    if (bad && !snap_active && (mi == MI_INTR_VI) && !borrowed_mode() && rom_is_libdragon() &&
+        (st_hold_tries < HOLD_TRIES)) {
+        st_hold_tries++;              /* v12: the hold (see state_hold) */
+        if (state_hold()) {
+            bad = 0;
+        }
     }
     if (bad) {
         if (st_wait > STATE_WAIT_MAX) {
@@ -1372,6 +1785,7 @@ static void state_service(uint32_t cause) {
     state_done(ST_OK);            /* the reply goes out before the world changes */
     TR_STAGE = 7;
     reentry = 0;
+    vi_resume_align();
     if ((st_hdr.hook_version >= 7u) && st_hdr.reserved[5]) {
         /* The saved world's clock, once more and last: state_do_load_body set it, then
          * vi_frz_end put the freeze's own clock back (the present one), so the game's
@@ -1434,12 +1848,20 @@ struct hook_cfg {
     uint32_t pc_pad;                 /* the PC's pad, over channel 0's answer: buttons << 16 | x << 8 | y ... */
     uint32_t pc_padn;                /* ... for these polls: sequence << 16 | polls (monitor.S keeps the count) */
     uint32_t pc_spare[3];
+    uint32_t combo_step;             /* 0xA0: the frame step button (step mode; L unless the menu says) */
+    uint32_t combo_shot;             /* 0xA4: the screenshot button (a tap; 0 = none) */
+    uint32_t shot_sectors;           /* 0xA8: the screenshot file's size in sectors (0 = no file; its run
+                                      * table at SHOT_TABLE_PI, its header block at SHOT_HDR_PI) */
+    uint32_t shot_fill;              /* 0xAC: the file's next free sector (SHOT_HDR_SECTORS at launch) */
+    uint32_t shot_count;             /* 0xB0: screenshots in it (the menu files them at its next start) */
+    uint32_t spare3[3];              /* 0xB4 */
 };
 struct hook_cfg hook_cfg __attribute__((aligned(16))) = {
     CFG_MAGIC, 7u, {0x10800000u, 0x10FC8000u, 0x11790000u, 0x11F58000u, 0x12720000u, 0x12EE8000u, 0x136B0000u, 0u},
     0x0830u /* L + R + D-pad up */, 0x0430u /* L + R + D-pad down */, 12u, 1u, 0u, 0u, {0},
-    0x3010u /* R + Z + Start */, 0u, 1u, 0u, {0u, 0u, 0u, 0u}, 0u, 0u, 0u, 0u, 0u, {0u, 0u, 0u}};
-#define CFG_WORDS       40u
+    0x3010u /* R + Z + Start (L + R + Start is an original controller's stick reset) */, 0u, 1u, 0u, {0u, 0u, 0u, 0u}, 0u, 0u, 0u, 0u, 0u, {0u, 0u, 0u},
+    0x0020u /* L: the frame step */, 0u, 0u, 0u, 0u, {0u, 0u, 0u}};
+#define CFG_WORDS       48u
 _Static_assert(sizeof(struct hook_cfg) == CFG_WORDS * 4u, "CFG_WORDS");
 /* monitor.S reads these fields from the staged copy by offset */
 _Static_assert(__builtin_offsetof(struct hook_cfg, combo_save) == 0x28u, "monitor.S: combo_save");
@@ -1452,8 +1874,16 @@ _Static_assert(__builtin_offsetof(struct hook_cfg, pc_req) == 0x80u, "monitor.S:
 _Static_assert(__builtin_offsetof(struct hook_cfg, pc_pad) == 0x8Cu, "monitor.S: pc_pad");
 _Static_assert(__builtin_offsetof(struct hook_cfg, pc_padn) == 0x90u, "monitor.S: pc_padn");
 _Static_assert(__builtin_offsetof(struct hook_cfg, spare) == 0x6Cu, "monitor.S: spare");
+_Static_assert(__builtin_offsetof(struct hook_cfg, combo_step) == 0xA0u, "menu: combo_step");
+_Static_assert(__builtin_offsetof(struct hook_cfg, combo_shot) == 0xA4u, "monitor.S: combo_shot");
+_Static_assert(__builtin_offsetof(struct hook_cfg, shot_sectors) == 0xA8u, "menu: shot_sectors");
+_Static_assert(__builtin_offsetof(struct hook_cfg, shot_fill) == 0xACu, "menu: shot_fill");
+_Static_assert(__builtin_offsetof(struct hook_cfg, shot_count) == 0xB0u, "menu: shot_count");
 static uint32_t borrowed_mode(void) {
     return (hook_cfg.spare & 0x20u) ? 1u : 0u;   /* hook_cfg.spare bit 5: no resident hook, the monitor borrows */
+}
+static uint32_t step_button(void) {
+    return hook_cfg.combo_step ? (hook_cfg.combo_step & 0xFFFFu) : 0x0020u;   /* the frame step button (L unless configured) */
 }
 static uint32_t image_len_max(void) {
     return borrowed_mode() ? STATE_IMAGE_LEN_B : STATE_IMAGE_LEN;
@@ -1473,6 +1903,7 @@ static uint32_t pad_valid = 0;
 static uint32_t combo_cnt_save = 0;
 static uint32_t combo_cnt_load = 0;
 static uint32_t combo_cnt_menu = 0;
+static uint32_t combo_cnt_shot = 0;
 
 static inline uint32_t pif_byte(const uint32_t *w, uint32_t i) {
     return (w[i >> 2] >> (24u - 8u * (i & 3u))) & 0xFFu;
@@ -1480,6 +1911,7 @@ static inline uint32_t pif_byte(const uint32_t *w, uint32_t i) {
 
 static uint32_t pad_buf = 0;            /* RDRAM address of the game's joybus block (diagnostic) */
 static uint32_t pad_btn_addr = 0;       /* RDRAM address of channel 0's button word in that block */
+static uint32_t pad_si_age = 0;         /* VI ticks since an SI completion last gave the buttons */
 
 /* Parse the joybus block at RDRAM address `base`; 1 when channel 0's buttons were taken. */
 static uint32_t pad_parse(uint32_t base) {
@@ -1533,15 +1965,24 @@ static uint32_t pad_parse(uint32_t base) {
 /* Every SI-transfer completion: the game's block is fresh, read it before libultra
  * hands it to the game. When a combo is fully held, its buttons are cleared in the
  * block so the game never reacts to them (no pause on Start, no crouch on Z). */
-static uint32_t pad_combo_held(void) {
-    uint32_t m;
-    m = hook_cfg.combo_save;
-    if (m && ((pad_buttons & m) == m)) return 1;
-    m = hook_cfg.combo_load;
-    if (m && ((pad_buttons & m) == m)) return 1;
-    m = hook_cfg.combo_menu;
-    if (m && ((pad_buttons & m) == m)) return 1;
-    return 0;
+/* The buttons a fully held combo hides from the game: the combo's own, not the ones all
+ * the combos share (L and R as configured). The game saw those held already, and would
+ * see them released and pressed again around a tap of the D-pad or Start (Mario 64 took
+ * that for a camera press). A lone combo hides all of itself. */
+static uint32_t pad_combo_hide(void) {
+    uint32_t hide = 0, common = 0xFFFFu;
+    const uint32_t masks[3] = {hook_cfg.combo_save, hook_cfg.combo_load, hook_cfg.combo_menu};
+    for (uint32_t i = 0; i < 3u; i++) {
+        uint32_t m = masks[i];
+        if (!m) continue;
+        common &= m;
+        if ((pad_buttons & m) == m) hide |= m;
+    }
+    if (hide && (common != hide)) hide &= ~common;
+    if (hook_cfg.combo_shot && ((pad_buttons & hook_cfg.combo_shot) == hook_cfg.combo_shot)) {
+        hide |= hook_cfg.combo_shot;      /* the screenshot button is the routine's alone */
+    }
+    return hide;
 }
 
 static void pad_si_tick(void) {
@@ -1559,19 +2000,51 @@ static void pad_si_tick(void) {
         return;
     }
     uint32_t got = ((a >= 0x38u) && pad_parse(a - 0x38u)) || pad_parse(a);
+    if (got) {
+        pad_si_age = 0;               /* the tick's refresh stands down: a held combo is cleared from this block below */
+    }
     if (got && pad_btn_addr) {
-        if (pad_combo_held()) {
-            *(volatile uint8_t *)pad_btn_addr = 0;
-            *(volatile uint8_t *)(pad_btn_addr + 1u) = 0;
+        uint32_t hide = pad_combo_hide();
+        if (hide) {
+            uint32_t w = ((uint32_t)*(volatile uint8_t *)pad_btn_addr << 8) | *(volatile uint8_t *)(pad_btn_addr + 1u);
+            w &= ~hide;
+            *(volatile uint8_t *)pad_btn_addr = (uint8_t)(w >> 8);
+            *(volatile uint8_t *)(pad_btn_addr + 1u) = (uint8_t)w;
         } else if (speed_div == SPEED_STEP) {
-            *(volatile uint8_t *)pad_btn_addr &= (uint8_t)~0x20u;   /* Z advances frames; the game never sees it */
+            uint32_t sb = step_button();                       /* the step button advances frames; the game never sees it */
+            *(volatile uint8_t *)pad_btn_addr &= (uint8_t)~(sb >> 8);
+            *(volatile uint8_t *)(pad_btn_addr + 1u) &= (uint8_t)~sb;
         }
+    }
+}
+
+/* Every VI tick as well: a libdragon game serves most of its controller transfers with
+ * interrupts off and no exception at all (its synchronous joybus path polls the SI and
+ * acknowledges it itself), so the completion above is never seen and the buttons would
+ * stay at the block the boot left behind. With the SI idle, the block of its last
+ * transfer is complete: take the buttons from there. A frame late at worst, and a combo
+ * is held for many. */
+static void pad_vi_refresh(void) {
+    if (!hook_cfg.combo_enabled || (SI_STATUS & 3u)) {
+        return;
+    }
+    if (pad_si_age < 1000u) {
+        pad_si_age++;
+    }
+    if (pad_si_age < 4u) {
+        return;                       /* a completion was seen lately: its buttons stand. A game that polls
+                                       * every other frame has its block re-read on the frames between
+                                       * otherwise, with the held combo the completion cleared from it */
+    }
+    uint32_t a = SI_DRAM_ADDR & 0x00FFFFFFu;
+    if (!((a >= 0x38u) && pad_parse(a - 0x38u))) {
+        pad_parse(a);
     }
 }
 
 /* Console-side request (combo or, later, the overlay): no mailbox reply. */
 static void state_queue(uint32_t op) {
-    if (st_pending || snap_active || (sd_state == 1u)) {
+    if (st_pending || snap_active || (sd_state == 1u) || shot_state) {
         return;
     }
     if ((op != STATE_OP_LOAD) && (dbg_unlock_ok == 0)) {
@@ -1584,6 +2057,7 @@ static void state_queue(uint32_t op) {
     crumb(1u, op, pad_buttons);
     st_seq = 0;
     st_wait = 0;
+    st_hold_tries = 0;
     st_dma_ticks = 0;
     for (uint32_t i = 0; i < 12u; i++) {
         st_dbg[i] = 0;
@@ -1615,6 +2089,13 @@ static void combo_service(void) {
         }
     } else {
         combo_cnt_menu = 0;
+    }
+    if (hook_cfg.combo_shot && ((pad_buttons & hook_cfg.combo_shot) == hook_cfg.combo_shot)) {
+        if (++combo_cnt_shot == 1u) {
+            shot_request();               /* a tap: the press itself, nothing held */
+        }
+    } else {
+        combo_cnt_shot = 0;
     }
 }
 
@@ -1679,6 +2160,20 @@ static uint32_t sd_seg_n = 0, sd_seg_i = 0, sd_seg_off = 0;
 #define SD_CHUNK_SECTORS 256u              /* 128 KiB per SD write command */
 #define SD_GAP_TICKS     1u                /* chunks follow each other on consecutive idle ticks */
 static uint32_t sd_chunk_len = 0, sd_gap = 0, sd_inflight = 0;
+/* A libdragon game may drive the cart's command registers itself (a build logging over
+ * USB), so a write fired from one tick and collected at a later one is open to it in
+ * between: the cart reads a command's two argument words only when its firmware gets to
+ * the command, and the game's next print had put its own there by then. Our sector write
+ * went out with the print's header as its count and the cart refused it (argument error,
+ * every logging build tried). Such a ROM gets each chunk written inside the tick, where the
+ * game cannot get at the registers, in smaller chunks so the pause per tick stays short. */
+static uint32_t sd_sync = 0;                 /* 0 not decided yet, 1 fired and collected (retail), 2 inside the tick */
+static uint32_t sd_sync_mode(void) {
+    if (sd_sync == 0) sd_sync = rom_is_libdragon() ? 2u : 1u;
+    return sd_sync == 2u;
+}
+static void sd_chunk_done(void);
+static void sd_fail(void);
 static uint32_t sd_state = 0;         /* 0 idle, 1 mirror write in flight, 2 last operation failed */
 static uint32_t sd_slot = 0;          /* slot (cart PI address) being mirrored */
 static uint32_t sd_inited = 0;
@@ -1688,7 +2183,35 @@ static uint32_t sd_reads_done = 0;
 static uint32_t sd_pending_slot = 0;  /* a state mirror waiting behind the pak's */
 
 /* Like sc64_command but with its own timeout and the error words captured. */
+/* A game may talk to the cart itself (a libdragon build logging over USB shares these
+ * registers): a command of its own may be in flight, or its arguments staged, or its
+ * result not yet read. Wait its command out, and put its two words back after ours. */
+static uint32_t sc64_command_long_raw(uint32_t id, uint32_t arg0, uint32_t arg1, uint32_t timeout);
+static uint32_t sc64_foreign_wait(uint32_t timeout) {
+    uint32_t sr, start = c0_count();
+    for (;;) {
+        if (!pio_read(SC64_SR_CMD, &sr)) return 0;
+        if (!(sr & SC64_SR_CPU_BUSY)) return 1u;
+        if ((c0_count() - start) > timeout) return 0;
+    }
+}
+
 static uint32_t sc64_command_long(uint32_t id, uint32_t arg0, uint32_t arg1, uint32_t timeout) {
+    uint32_t sr, start, d0 = 0, d1 = 0, g0 = 0, g1 = 0;
+    if (!sc64_foreign_wait(timeout)) {
+        sd_last_error = 0xFFFE0000u | id;
+        return 0;
+    }
+    pio_read(SC64_DATA0, &g0);
+    pio_read(SC64_DATA1, &g1);
+    uint32_t r = sc64_command_long_raw(id, arg0, arg1, timeout);
+    pio_write(SC64_DATA0, g0);
+    pio_write(SC64_DATA1, g1);
+    (void) sr; (void) start; (void) d0; (void) d1;
+    return r;
+}
+
+static uint32_t sc64_command_long_raw(uint32_t id, uint32_t arg0, uint32_t arg1, uint32_t timeout) {
     uint32_t sr, start, d0 = 0, d1 = 0;
     if (!pio_write(SC64_DATA0, arg0)) return 0;
     if (!pio_write(SC64_DATA1, arg1)) return 0;
@@ -1714,6 +2237,7 @@ static uint32_t sc64_command_long(uint32_t id, uint32_t arg0, uint32_t arg1, uin
 
 /* Fire a command and return at once; sd_service() collects the result. */
 static uint32_t sc64_command_issue(uint32_t id, uint32_t arg0, uint32_t arg1) {
+    if (!sc64_foreign_wait(CMD_TIMEOUT_TICKS)) return 0;
     if (!pio_write(SC64_DATA0, arg0)) return 0;
     if (!pio_write(SC64_DATA1, arg1)) return 0;
     if (!pio_write(SC64_SR_CMD, id & 0xFFu)) return 0;
@@ -1834,9 +2358,22 @@ static void sd_issue_chunk(void) {
     uint32_t run_left = sd_runs[r].file_sector + sd_runs[r].count - fs;
     sd_chunk_len = left;
     if (sd_chunk_len > run_left) sd_chunk_len = run_left;
-    if (sd_chunk_len > SD_CHUNK_SECTORS) sd_chunk_len = SD_CHUNK_SECTORS;
-    if (!sc64_command_long(SC64_CMD_SD_SECTOR_SET, sd_runs[r].sector + (fs - sd_runs[r].file_sector), 0, CMD_TIMEOUT_TICKS) ||
-        !sc64_command_issue(SC64_CMD_SD_WRITE, g->src + sd_seg_off * 512u, sd_chunk_len)) {
+    uint32_t sync = sd_sync_mode();
+    uint32_t max = sync ? (SD_CHUNK_SECTORS / 2u) : SD_CHUNK_SECTORS;
+    if (sd_chunk_len > max) sd_chunk_len = max;
+    if (!sc64_command_long(SC64_CMD_SD_SECTOR_SET, sd_runs[r].sector + (fs - sd_runs[r].file_sector), 0, CMD_TIMEOUT_TICKS)) {
+        sd_state = 2;
+        return;
+    }
+    if (sync) {
+        if (!sc64_command_long(SC64_CMD_SD_WRITE, g->src + sd_seg_off * 512u, sd_chunk_len, SD_XFER_TIMEOUT_TICKS)) {
+            sd_fail();
+            return;
+        }
+        sd_chunk_done();
+        return;
+    }
+    if (!sc64_command_issue(SC64_CMD_SD_WRITE, g->src + sd_seg_off * 512u, sd_chunk_len)) {
         sd_state = 2;
         return;
     }
@@ -1913,11 +2450,142 @@ static uint32_t sd_write_begin(uint32_t slot_base) {
     return sd_write_begin2(slot_base, 0);
 }
 
+/* The screenshot file's first sector must carry the fresh marker for this ROM and index:
+ * the menu wrote it when it allocated the file, and nothing else is ever written over. */
+static uint32_t sd_verify_shot(void) {
+    uint32_t w0 = 0, w1 = 0, w2 = 0, crc1 = 0, crc2 = 0;
+    if (!sd_read_header_sector()) return 0;
+    pio_read(SD_BRAM_SECTOR + 0x0, &w0);
+    pio_read(SD_BRAM_SECTOR + 0x4, &w1);
+    pio_read(SD_BRAM_SECTOR + 0x8, &w2);
+    pio_read(0xB0000010u, &crc1);
+    pio_read(0xB0000014u, &crc2);
+    if ((w0 == SD_MAGIC_SHOT) && (w1 == crc1) && (w2 == crc2)) return 1;
+    sd_last_error = 0xDDDC0000u | (w0 >> 16);
+    return 0;
+}
+
+/* Room in the screenshot file for another frame (the largest a PNG of one can be) */
+static uint32_t shot_room(void) {
+    return hook_cfg.shot_sectors && (hook_cfg.shot_count < SHOT_ENTRIES_MAX) &&
+           ((hook_cfg.shot_fill + FRAME_STASH_LEN / 512u) <= hook_cfg.shot_sectors);
+}
+
+/* A screenshot (a PNG of len bytes in the frame stash) appended to the screenshot file:
+ * the PNG at the fill point, then the header block with the new count and the shot's
+ * entry (the copy on the cart is brought up to date first; a write that fails before the
+ * header leaves the file's count as it was). Behind a state's mirror in flight it waits
+ * its turn (the stash is not reused until it is done). */
+static uint32_t sd_write_begin_shot(uint32_t len) {
+    uint32_t sectors = (len + 511u) / 512u;
+    if (!hook_cfg.shot_sectors || !len || (hook_cfg.shot_count >= SHOT_ENTRIES_MAX) ||
+        ((hook_cfg.shot_fill + sectors) > hook_cfg.shot_sectors)) return 0;
+    if (sd_state == 1u) {
+        sd_shot_pending = 1u;
+        sd_shot_len = len;
+        return 1u;
+    }
+    crumb(0x68u, hook_cfg.shot_fill, len);
+    if (!sd_ensure_init() || !sd_load_runs_at(SHOT_TABLE_PI)) {
+        crumb(13u, 16u, sd_last_error);
+        sd_state = 2;
+        return 0;
+    }
+    if ((hook_cfg.shot_fill + sectors) > sd_total) {
+        sd_last_error = 0xCCCE0000u | (sectors & 0xFFFFu);
+        crumb(13u, 17u, sd_last_error);
+        sd_state = 2;
+        return 0;
+    }
+    if (!sd_verify_shot()) {
+        crumb(13u, 18u, sd_last_error);
+        sd_state = 2;
+        return 0;
+    }
+    uint32_t i = hook_cfg.shot_count, hdr = 0xA0000000u | SHOT_HDR_PI;
+    shot_fill0 = hook_cfg.shot_fill;
+    shot_count0 = i;
+    if (!rom_write_set(1u)) return 0;
+    pio_write(hdr + 32u + 8u * i, hook_cfg.shot_fill);
+    pio_write(hdr + 36u + 8u * i, len);
+    pio_write(hdr + 12u, i + 1u);
+    pio_write(hdr + 20u, hook_cfg.shot_fill + sectors);
+    rom_write_set(0);
+    sd_segs[0].file_sector = hook_cfg.shot_fill; sd_segs[0].count = sectors; sd_segs[0].src = FRAME_STASH_PI;
+    sd_segs[1].file_sector = 0; sd_segs[1].count = SHOT_HDR_SECTORS; sd_segs[1].src = SHOT_HDR_PI;
+    hook_cfg.shot_fill += sectors;
+    hook_cfg.shot_count = i + 1u;
+    sd_seg_n = 2;
+    sd_seg_i = 0;
+    sd_seg_off = 0;
+    sd_slot = 0;
+    sd_inflight = 0;
+    sd_gap = 0;
+    sd_kind = 1u;
+    sd_state = 1;
+    sd_issue_chunk();
+    return (sd_state == 1) ? 1u : 0u;
+}
+
+/* a screenshot's write failed: the file's header still says the count before it */
+static void shot_write_failed(void) {
+    hook_cfg.shot_fill = shot_fill0;
+    hook_cfg.shot_count = shot_count0;
+    if (rom_write_set(1u)) {
+        pio_write((0xA0000000u | SHOT_HDR_PI) + 12u, shot_count0);
+        pio_write((0xA0000000u | SHOT_HDR_PI) + 20u, shot_fill0);
+        rom_write_set(0);
+    }
+}
+
 static uint32_t sd_write_begin_head(uint32_t slot_base) {
     return sd_write_begin2(slot_base, 1u);
 }
 
 /* Every VI tick: collect the in-flight write, start the next chunk. */
+static uint32_t sd_retry = 0;          /* chunks issued again after an error read */
+
+/* a write that failed for good: the mirror stops, a screenshot behind it is lost too */
+static void sd_fail(void) {
+    sd_state = 2;
+    sd_inflight = 0;
+    if (sd_kind == 1u) {
+        shot_write_failed();
+        feedback_show("SCREENSHOT LOST");
+    }
+    sd_kind = 0;
+    sd_shot_pending = 0;
+}
+
+/* a chunk written: the next one next tick, or the mirror is done (one waiting behind it starts) */
+static void sd_chunk_done(void) {
+    sd_inflight = 0;
+    sd_retry = 0;
+    sd_seg_off += sd_chunk_len;
+    while ((sd_seg_i < sd_seg_n) && (sd_seg_off >= sd_segs[sd_seg_i].count)) {
+        sd_seg_i++;
+        sd_seg_off = 0;
+    }
+    if (sd_seg_i >= sd_seg_n) {
+        sd_state = 0;
+        sd_kind = 0;
+        sd_writes_done++;
+        crumb(12u, sd_writes_done, 0);
+        rom_write_set(0);             /* in case the "off" at the end of the freeze was lost */
+        if (sd_shot_pending) {        /* a screenshot waited behind this one (its frame is in the stash) */
+            sd_shot_pending = 0;
+            sd_write_begin_shot(sd_shot_len);
+            return;
+        }
+        if (sd_pending_slot) {        /* a state mirror waited behind this one */
+            uint32_t slot = sd_pending_slot;
+            sd_pending_slot = 0;
+            sd_write_begin(slot);
+        }
+        return;
+    }
+    sd_gap = 0;
+}
 static void sd_service(void) {
     uint32_t sr, d0 = 0, d1 = 0;
     if (sd_state != 1) return;
@@ -1928,28 +2596,16 @@ static void sd_service(void) {
             pio_read(SC64_DATA0, &d0);
             pio_read(SC64_DATA1, &d1);
             sd_last_error = (d0 << 16) | (d1 & 0xFFFFu);
-            sd_state = 2;
-            return;
-        }
-        sd_inflight = 0;
-        sd_seg_off += sd_chunk_len;
-        while ((sd_seg_i < sd_seg_n) && (sd_seg_off >= sd_segs[sd_seg_i].count)) {
-            sd_seg_i++;
-            sd_seg_off = 0;
-        }
-        if (sd_seg_i >= sd_seg_n) {
-            sd_state = 0;
-            sd_writes_done++;
-            crumb(12u, sd_writes_done, 0);
-            rom_write_set(0);             /* in case the "off" at the end of the freeze was lost */
-            if (sd_pending_slot) {        /* a state mirror waited behind this one */
-                uint32_t slot = sd_pending_slot;
-                sd_pending_slot = 0;
-                sd_write_begin(slot);
+            if (++sd_retry <= 3u) {
+                sd_inflight = 0;          /* the same chunk again: the error read may have been a
+                                           * command of the game's own (a build logging over USB) */
+                sd_gap = 0;
+                return;
             }
+            sd_fail();
             return;
         }
-        sd_gap = 0;
+        sd_chunk_done();
         return;
     }
     if (++sd_gap < SD_GAP_TICKS) return;        /* let the game's cartridge reads through */
@@ -1969,7 +2625,12 @@ static uint32_t sd_read_slot(uint32_t slot_base) {
         sd_state = 2;
         return 0;
     }
-    /* the header sector says whether it is a state and how long */
+    /* the header sector says whether it is a state and how long. The length is checked
+     * against the slot's capacity (STATE_IMAGE_LEN_B), not this placement's image: a
+     * full-RAM state made in the cartridge placement is read back for the resident hook
+     * too, whose load clamps it to its 7.75 MiB (hdr_status says the same); checked
+     * against image_len_max() it was refused, and a resume or a load after a power
+     * cycle found "no state" */
     pio_read(SD_BRAM_SECTOR + 0x00, &w0);
     pio_read(SD_BRAM_SECTOR + 0x04, &ver);
     pio_read(SD_BRAM_SECTOR + 0x0C, &image_len);
@@ -1979,7 +2640,7 @@ static uint32_t sd_read_slot(uint32_t slot_base) {
     pio_read(0xB0000010u, &crc1);
     pio_read(0xB0000014u, &crc2);
     if ((w0 != STATE_MAGIC) || (ver < 2u) || (h1 != crc1) || (h2 != crc2) ||
-        (image_off < STATE_HDR_LEN) || (image_off & 511u) || (image_len == 0) || (image_len > image_len_max()) ||
+        (image_off < STATE_HDR_LEN) || (image_off & 511u) || (image_len == 0) || (image_len > STATE_IMAGE_LEN_B) ||
         ((image_off + image_len) > (slot_len_cur() - 0x1000u))) {
         sd_last_error = 0xDDDE0000u | (w0 >> 16);
         return 0;
@@ -2025,6 +2686,47 @@ static uint32_t vpak_loaded = 0;
 static uint32_t vpak_dirty = 0, vpak_dirty_tick = 0, vpak_flushing = 0, vpak_sd_pending = 0;
 static uint32_t vpak_dirty_mask = 0, vpak_flush_mask = 0;   /* 2 KiB regions written since the last flush / still to copy in this one */
 static uint32_t vpak_reads = 0, vpak_writes = 0, vpak_probes = 0;   /* diagnostics */
+/* The pak's port and presence, live: the panel's VIRTUAL PAK row changes them in the
+ * game (the PC too, in development). Removed, the channel is left to whatever is in
+ * the real slot: a Rumble Pak the game then finds, or nothing. After a change the
+ * next identify on the channel reports "pak changed" once, as the PIF does after a
+ * swap, so a game that keeps its own idea of the slot looks again. In borrowed mode
+ * the same bits live in the control block's word at +0x38 (PAK_CTL_LIVE), which the
+ * menu writes at launch, the monitor's server reads at every block and the panel's
+ * borrow rewrites (pak_live_store). */
+#define PAK_LIVE_IN     0x10u          /* inserted */
+#define PAK_LIVE_PULL   0x20u          /* the next identify says "pak changed" */
+#define PAK_LIVE_FAKE   0x40u          /* dev: an empty slot answers as a Rumble Pak (resident hook only) */
+static uint32_t vpak_ch = 0;           /* the channel (port - 1) the virtual pak sits in */
+static uint32_t vpak_in = 1;           /* 1 inserted; 0 removed */
+static uint32_t vpak_pull = 0;         /* "pak changed" pending for the channel's next identify */
+static uint32_t vpak_live_init = 0;    /* the port taken from hook_cfg once (the resident hook) */
+static uint32_t pak_live_word(void) {
+    uint32_t w = (vpak_ch & 3u) | (vpak_in ? PAK_LIVE_IN : 0u) | (vpak_pull ? PAK_LIVE_PULL : 0u);
+    return w;
+}
+static void pak_live_set(uint32_t w) {
+    vpak_ch = w & 3u;
+    vpak_in = (w & PAK_LIVE_IN) ? 1u : 0u;
+    vpak_pull = (w & PAK_LIVE_PULL) ? 1u : 0u;
+    vpak_live_init = 1u;
+}
+/* the resident hook: the port from the launch config (spare bits 12..13), inserted */
+static void pak_live_from_cfg(void) {
+    if (vpak_live_init) return;
+    pak_live_set(((hook_cfg.spare >> 12) & 3u) | PAK_LIVE_IN);
+}
+/* a change from the panel or the PC: out (port 0) or in at port 1..4; "pak changed" once */
+static void pak_live_change(uint32_t port) {
+    if (port == 0) {
+        vpak_in = 0;
+    } else {
+        vpak_in = 1u;
+        vpak_ch = (port - 1u) & 3u;
+    }
+    vpak_pull = 1u;
+    vpak_live_init = 1u;
+}
 #define VPAK_TRACE(cmd, rxb, d0, blk) do { } while (0)
 
 /* the accessory data CRC, as libdragon and libultra compute it */
@@ -2045,8 +2747,9 @@ static uint32_t vpak_crc(const uint8_t *d) {
     return crc & 0xFFu;
 }
 
-/* The joybus block at RDRAM `base` (uncached): channel 0's accessory commands are
- * answered in place. Returns how many were. */
+/* The joybus block at RDRAM `base` (uncached): the accessory commands of the channel
+ * the pak sits in are answered in place; removed, the channel is left alone except for
+ * the one "pak changed" report. Returns how many were answered. */
 static uint32_t vpak_serve(uint32_t base) {
     if ((base == 0) || (base & 7u) || (base > 0x007FFFC0u)) return 0;
     volatile uint8_t *b = (volatile uint8_t *)(0xA0000000u | base);
@@ -2062,42 +2765,51 @@ static uint32_t vpak_serve(uint32_t base) {
         if ((tx == 0) || ((i + 2u + tx + rx) > 64u)) {
             break;                                                    /* not a block after all */
         }
-        if (ch == 0u) {
+        if ((ch == vpak_ch) && !(rxb & 0xC0u)) {   /* the pak's channel, and a controller answered there (a port
+                                                     * with none is left as the PIF reported it: no controller) */
+            uint32_t ident = ((cmd == 0x00u) || (cmd == 0xFFu)) && (tx == 1u) && (rx == 3u);
+            uint32_t rd = (cmd == 0x02u) && (tx == 3u) && (rx == 33u);
+            uint32_t wr = (cmd == 0x03u) && (tx == 35u) && (rx == 1u);
+            uint32_t answer = vpak_in;             /* removed: the real slot answers for itself ... */
             if ((cmd == 0x02u) || (cmd == 0x03u)) {
                 VPAK_TRACE(cmd, rxb, b[i + 5u], (((uint32_t)b[i + 3u] << 8) | b[i + 4u]) >> 5);
             }
-            if (((cmd == 0x00u) || (cmd == 0xFFu)) && (tx == 1u) && (rx == 3u)) {
-                b[i + 1u] = (uint8_t)rx;                                /* no receive error */
-                b[i + 5u] = (uint8_t)((b[i + 5u] | 0x01u) & 0xFDu);     /* pak present, not "pulled" */
-                vpak_probes++;
-                served++;
-            } else if ((cmd == 0x02u) && (tx == 3u) && (rx == 33u)) {
-                uint32_t blk = (((uint32_t)b[i + 3u] << 8) | b[i + 4u]) >> 5;
-                const uint8_t *src = (const uint8_t *)vpak_img + blk * 32u;
-                for (uint32_t k = 0; k < 32u; k++) {
-                    tmp[k] = (blk < VPAK_BLOCKS) ? src[k] : 0u;   /* 0x8000 and above read as zeros, as on a Controller
-                                                                    * Pak (an echo of the bank byte is a Rumble Pak's answer
-                                                                    * and made osMotorInit take this pak for one) */
-                    b[i + 5u + k] = tmp[k];
+            if (ident) {
+                if (answer) {
+                    b[i + 1u] = (uint8_t)rx;                                /* no receive error */
+                    b[i + 5u] = (uint8_t)((b[i + 5u] | 0x01u | (vpak_pull ? 0x02u : 0u)) & (vpak_pull ? 0xFFu : 0xFDu));   /* a pak present; "pulled" once after a change */
+                    vpak_probes++;
+                    served++;
+                } else if (vpak_pull) {
+                    b[i + 5u] |= 0x02u;                                     /* "pak changed": the game looks again */
+                    served++;
                 }
-                b[i + 37u] = (uint8_t)vpak_crc(tmp);
-                b[i + 1u] = (uint8_t)rx;
-                vpak_reads++;
-                served++;
-            } else if ((cmd == 0x03u) && (tx == 35u) && (rx == 1u)) {
+                vpak_pull = 0;
+            } else if ((rd || wr) && answer) {
                 uint32_t blk = (((uint32_t)b[i + 3u] << 8) | b[i + 4u]) >> 5;
-                for (uint32_t k = 0; k < 32u; k++) tmp[k] = b[i + 5u + k];
-                if (blk < VPAK_BLOCKS) {
-                    uint8_t *dst = (uint8_t *)vpak_img + blk * 32u;
-                    for (uint32_t k = 0; k < 32u; k++) dst[k] = tmp[k];
-                    vpak_dirty = 1;
-                    vpak_dirty_tick = ticks;
-                    vpak_dirty_mask |= 1u << (blk >> 6);       /* its 2 KiB region: the flush copies only those */
+                uint32_t img = (answer == 1u) && (blk < VPAK_BLOCKS);      /* the image; 0x8000 and above read as zeros, as on a
+                                                                            * Controller Pak (an echo of the bank byte is a Rumble Pak's
+                                                                            * answer and made osMotorInit take this pak for one) */
+                uint8_t *p = (uint8_t *)vpak_img + blk * 32u;
+                if (rd) {
+                    uint8_t fill = 0;
+                    for (uint32_t k = 0; k < 32u; k++) {
+                        tmp[k] = img ? p[k] : fill;
+                        b[i + 5u + k] = tmp[k];
+                    }
+                    vpak_reads++;
                 } else {
+                    for (uint32_t k = 0; k < 32u; k++) tmp[k] = b[i + 5u + k];
+                    if (img) {
+                        for (uint32_t k = 0; k < 32u; k++) p[k] = tmp[k];
+                        vpak_dirty = 1;
+                        vpak_dirty_tick = ticks;
+                        vpak_dirty_mask |= 1u << (blk >> 6);       /* its 2 KiB region: the flush copies only those */
+                    }
+                    vpak_writes++;
                 }
                 b[i + 37u] = (uint8_t)vpak_crc(tmp);
                 b[i + 1u] = (uint8_t)rx;
-                vpak_writes++;
                 served++;
             }
         }
@@ -2362,6 +3074,7 @@ static uint32_t sd_write_begin_pak(void) {
 static void vpak_service(void) {
     if (!(hook_cfg.spare & 4u)) return;
     if (!vpak_loaded) {
+        pak_live_from_cfg();
         dcache_writeback_all();
         if (pi_dma((uint32_t)(uintptr_t)vpak_img, VPAK_PI, VPAK_LEN, 0u)) {
             vpak_loaded = 1;
@@ -2425,15 +3138,17 @@ static void vpak_service(void) {
 #define PAK_CTL_MAGIC   0x56504B31u   /* 'VPK1' */
 #define PAK_CTL_KSEG1   (0xA0000000u | VPAK_CTL_PI)
 
+#define PAK_CTL_LIVE_OFF 0x38u
 static uint32_t pak_ctl_load(void) {
-    uint32_t w[14];
+    uint32_t w[15];
     pak_ctl_ok = 0;
     if (!borrowed_mode() || !(hook_cfg.spare & 4u)) return 0;
-    for (uint32_t i = 0; i < 14u; i++) {
+    for (uint32_t i = 0; i < 15u; i++) {
         if (!pio_read(PAK_CTL_KSEG1 + 4u * i, &w[i])) return 0;
     }
     if (w[0] != PAK_CTL_MAGIC) return 0;
     pak_ctl_ok = 1;
+    pak_live_set(w[14]);                /* +38: the port, inserted, "pak changed" pending */
     tramp_state = w[1];                 /* +4 state, +8 the dirty stamp, +C the bank byte (the monitor's) */
     tramp_scheme = w[4];                /* +10 */
     tramp_site_pa = w[5];               /* +14 */
@@ -2453,6 +3168,17 @@ static uint32_t pak_ctl_store(void) {
         ok &= pio_write(PAK_CTL_KSEG1 + 0x18u + 4u * k, tramp_orig[4u + k]);
         ok &= pio_write(PAK_CTL_KSEG1 + 0x28u + 4u * k, vpak_tramp_vec[k]);
     }
+    ok &= pio_write(PAK_CTL_KSEG1 + PAK_CTL_LIVE_OFF, pak_live_word());
+    rom_write_set(0);
+    return ok;
+}
+
+/* the live word alone (a change from the panel or the PC, in borrowed mode: the monitor
+ * serves from it as soon as the borrow is over) */
+static uint32_t pak_live_store(void) {
+    if (!borrowed_mode()) return 1u;
+    if (!pak_ctl_ok || !rom_write_set(1u)) return 0;
+    uint32_t ok = pio_write(PAK_CTL_KSEG1 + PAK_CTL_LIVE_OFF, pak_live_word());
     rom_write_set(0);
     return ok;
 }
@@ -2594,7 +3320,7 @@ static void pif_poll_block_send(void) {
  * every game frame shown div times. Count is rolled back over the hold, so the
  * game's clock runs slow with it. The game makes less audio than the console
  * plays during a hold, so the sound stutters; that is the price. STEP holds
- * until Z is tapped (hidden from the game by pad_si_tick) or R+Z+Start asks for
+ * until Z is tapped (hidden from the game by pad_si_tick) or the panel combo asks for
  * the panel. Never during a queued state operation or a running mirror. */
 /* The sound of slow motion: the game makes one audio buffer per div fields, the AI
  * plays one per field, so either the sound has gaps or the AI is slowed with the
@@ -2677,11 +3403,21 @@ static void speed_hold(void) {
         ai_slow_set(0);
     }
     if ((speed_div <= 1u) || st_pending || (sd_state == 1u) || vi_frz_frozen) return;
+    if ((speed_div == SPEED_STEP) && step_run) {
+        /* a step in progress: the game runs until it shows a new frame (a 30 fps game takes
+         * two ticks for one), five ticks at most (a paused or static screen) */
+        if (((VI_ORIGIN_REG & 0x00FFFFFFu) == step_origin) && (++step_run <= 5u)) return;
+        step_run = 0;
+    }
     vi_frz_begin(1u);
     if ((speed_div != SPEED_STEP) && !slow_sound) {
         ai_slow_set(1u);                                /* every hold: the game may have rewritten the rate */
     }
     if (speed_div == SPEED_STEP) {
+        /* the step button: a press lets one frame through (the game runs until it shows a
+         * new one, see step_run above); held past half a second it repeats ten times a
+         * second. Polled every 4 ms, so a tap is taken up within a frame. */
+        uint32_t stepb = step_button();
         uint32_t held = 0;
         for (;;) {
             uint32_t b = 0;
@@ -2689,9 +3425,18 @@ static void speed_hold(void) {
                 uint32_t pressed = b & ~step_prev;
                 if (step_prev == 0xFFFFu) pressed = 0;
                 step_prev = b;
-                if (pressed & 0x2000u) break;                     /* Z: one frame */
+                if ((b & stepb) == stepb) {
+                    if (step_held < 100000u) step_held++;
+                    if ((pressed & stepb) || ((step_held > 125u) && ((step_held % 25u) == 0))) {
+                        step_run = 1u;
+                        step_origin = VI_ORIGIN_REG & 0x00FFFFFFu;
+                        break;
+                    }
+                } else {
+                    step_held = 0;
+                }
                 if (hook_cfg.combo_menu && ((b & hook_cfg.combo_menu) == hook_cfg.combo_menu)) {
-                    if (++held >= 8u) {
+                    if (++held >= 30u) {
                         state_queue(STATE_OP_MENU);
                         break;
                     }
@@ -2700,7 +3445,7 @@ static void speed_hold(void) {
                 }
             }
             uint32_t t1 = c0_count();
-            while ((c0_count() - t1) < (46875u * 16u)) { vi_frz_service(); }
+            while ((c0_count() - t1) < (46875u * 4u)) { vi_frz_service(); }
         }
     } else {
         for (uint32_t f = 2u; f < speed_div; f++) vi_hold_field();   /* vi_frz_end holds the last one */
@@ -2726,7 +3471,10 @@ static void speed_hold(void) {
 #define PI_DOM0_RLS      (*(vu32 *)0xA4600020u)
 extern const uint32_t reboot_blob[];
 extern char reboot_blob_size[], reboot_blob_entry_off[];
-static uint32_t ipl3w[1008] = {0};        /* the bootloader's IPL3 (4032 bytes), for its CIC seed */
+static uint32_t bounce[0x2000u / 4u] __attribute__((aligned(16)));   /* (defined below) */
+#define ipl3w bounce                      /* the bootloader's IPL3 (4032 bytes), for its CIC seed: read into the
+                                           * 8 KiB bounce buffer, whose own uses (the state copies in borrowed mode,
+                                           * the screenshot) are over by the time an exit reads it; 4 KiB of blob */
 static uint32_t exit_stage = 0;
 
 /* the IPL3 checksum the CICs verify, as the menu computes it (src/boot/cic.c) */
@@ -3062,13 +3810,248 @@ static uint32_t shot_take(void) {
     return ok ? ST_OK : ST_DMA_FAIL;
 }
 
+/* ---- Screenshots -----------------------------------------------------------------
+ * A tap of the screenshot button writes the displayed frame to the card as a PNG: the
+ * rows as 24-bit RGB in stored (uncompressed) deflate blocks, so no compressor is needed
+ * here and every viewer opens it. The file is one of a few the menu allocates in
+ * sd:/screenshots/pending (SHOT_FILE_LEN each, their run tables at SHOT_TABLE_PI); the
+ * menu names them after the game and moves them to its folder at its next start. The PNG
+ * is built in the frame stash on the cart, through the 8 KiB bounce, and copied from
+ * there by the SD mirror machinery. A 320x240 frame takes about a tenth of a second
+ * with the game held, a 640x480 one about half. */
+#define PNG_BLOCK_MAX   65535u
+static const uint32_t crc_nib[16] = {0, 0x1DB71064u, 0x3B6E20C8u, 0x26D930ACu, 0x76DC4190u, 0x6B6B51F4u, 0x4DB26158u, 0x5005713Cu,
+                                     0xEDB88320u, 0xF00F9344u, 0xD6D6A3E8u, 0xCB61B38Cu, 0x9B64C2B0u, 0x86D3D2D4u, 0xA00AE278u, 0xBDBDF21Cu};
+static uint32_t pw_dst = 0, pw_fill = 0, pw_total = 0, pw_len = 0, pw_crc = 0, pw_ok = 1;
+static uint32_t pw_a = 1, pw_b = 0, pw_an = 0;          /* Adler-32 sums, and bytes since the last modulo */
+static uint32_t png_raw_left = 0, png_blk_left = 0, png_first = 0;
+
+static uint32_t mod65521(uint32_t x) {                 /* 2^16 = 15 (mod 65521) */
+    x = (x & 0xFFFFu) + (x >> 16) * 15u;
+    x = (x & 0xFFFFu) + (x >> 16) * 15u;
+    while (x >= 65521u) x -= 65521u;
+    return x;
+}
+
+static void pw_flush(uint32_t all) {
+    uint32_t n = all ? ((pw_fill + 15u) & ~15u) : pw_fill;   /* the last piece padded (the file is longer anyway) */
+    if (n == 0) return;
+    dcache_writeback_all();
+    if (!pi_dma((uint32_t)(uintptr_t)bounce, pw_dst + pw_total, n, 1u)) pw_ok = 0;
+    pw_total += n;
+    pw_fill = 0;
+}
+
+static void pw_byte(uint32_t b) {
+    ((uint8_t *)bounce)[pw_fill++] = (uint8_t)b;
+    pw_len++;
+    pw_crc = (pw_crc >> 4) ^ crc_nib[(pw_crc ^ b) & 15u];
+    pw_crc = (pw_crc >> 4) ^ crc_nib[(pw_crc ^ (b >> 4)) & 15u];
+    if (pw_fill == sizeof(bounce)) pw_flush(0);
+}
+
+static void pw_be32(uint32_t w) {
+    pw_byte(w >> 24); pw_byte((w >> 16) & 0xFFu); pw_byte((w >> 8) & 0xFFu); pw_byte(w & 0xFFu);
+}
+
+static void pw_chunk_open(const char *type, uint32_t len) {   /* the length, then the type (the CRC starts there) */
+    pw_be32(len);
+    pw_crc = 0xFFFFFFFFu;
+    pw_byte((uint32_t)(uint8_t)type[0]); pw_byte((uint32_t)(uint8_t)type[1]);
+    pw_byte((uint32_t)(uint8_t)type[2]); pw_byte((uint32_t)(uint8_t)type[3]);
+}
+
+static void pw_chunk_close(void) {
+    uint32_t c = ~pw_crc;
+    pw_be32(c);
+}
+
+/* one stored deflate block in an IDAT chunk of its own */
+static void png_block_open(void) {
+    uint32_t len = (png_raw_left > PNG_BLOCK_MAX) ? PNG_BLOCK_MAX : png_raw_left;
+    uint32_t last = (len == png_raw_left) ? 1u : 0u;
+    pw_chunk_open("IDAT", (png_first ? 2u : 0u) + 5u + len + (last ? 4u : 0u));
+    if (png_first) { pw_byte(0x78u); pw_byte(0x01u); png_first = 0; }   /* the zlib header */
+    pw_byte(last); pw_byte(len & 0xFFu); pw_byte(len >> 8); pw_byte(~len & 0xFFu); pw_byte((~len >> 8) & 0xFFu);
+    png_blk_left = len;
+}
+
+static void png_block_close(void) {
+    if (png_raw_left == 0) {                           /* the stream's end: the Adler-32 of the raw bytes */
+        pw_be32((mod65521(pw_b) << 16) | mod65521(pw_a));
+    }
+    pw_chunk_close();
+}
+
+/* a raw (filter type or pixel) byte: into the block in progress, the next when it is full */
+static void png_raw(uint32_t b) {
+    if (png_blk_left == 0) {
+        png_block_close();
+        png_block_open();
+    }
+    pw_byte(b);
+    pw_a += b;
+    pw_b += pw_a;
+    if (++pw_an == 4000u) { pw_a = mod65521(pw_a); pw_b = mod65521(pw_b); pw_an = 0; }
+    png_blk_left--;
+    png_raw_left--;
+}
+
+static void png_rgb5(uint32_t p) {                     /* an RGBA5551 pixel as three bytes */
+    uint32_t r = p >> 11, g = (p >> 6) & 31u, b = (p >> 1) & 31u;
+    png_raw((r << 3) | (r >> 2)); png_raw((g << 3) | (g >> 2)); png_raw((b << 3) | (b >> 2));
+}
+
+/* a row's bytes, readable: from RAM (uncached, as the VI sees it), or, in borrowed mode,
+ * the part under the hook's home from the stash of this visit (Rush 2049's pak screen
+ * keeps a hi-res buffer that high) */
+static const uint8_t *shot_row(uint32_t phys, uint32_t bytes) {
+    if (!borrowed_mode() || (phys >= BORROW_HI) || ((phys + bytes) <= BORROW_LO)) {
+        return (const uint8_t *)(0xA0000000u | phys);
+    }
+    uint8_t *d = (uint8_t *)(0xA0000000u | ((uint32_t)(uintptr_t)bounce_buf & 0x1FFFFFFFu));
+    uint32_t below = (phys < BORROW_LO) ? (BORROW_LO - phys) : 0u;
+    const vu32 *src = (const vu32 *)(0xA0000000u | phys);
+    for (uint32_t i = 0; i < below; i += 4u) {
+        uint32_t v = src[i / 4u];
+        d[i] = (uint8_t)(v >> 24); d[i + 1u] = (uint8_t)(v >> 16); d[i + 2u] = (uint8_t)(v >> 8); d[i + 3u] = (uint8_t)v;
+    }
+    uint32_t rest = bytes - below;
+    if (rest && !pi_dma((uint32_t)(uintptr_t)bounce_buf + below, STASH_PI + (phys + below - BORROW_LO), rest, 0u)) pw_ok = 0;
+    return d;
+}
+
+/* the displayed frame as a PNG into the frame stash on the cart; the length in shot_len */
+static uint32_t shot_capture(void) {
+    struct ov_screen s;
+    char stamp[24];
+    uint32_t date = 0, time = 0;
+    ov_screen_read(&s);
+    if (!ov_screen_ok(&s) || (s.vis & 1u)) return ST_BAD_ARGS;
+    uint32_t w = s.vis, h = borrowed_mode() ? s.height_all : s.height, phys = s.fb & 0x00FFFFFFu;
+    uint32_t rowb = w * s.bpp, stride = s.width * s.bpp;
+    if ((rowb > sizeof(bounce_buf)) || (phys + stride * h > 0x00800000u)) return ST_BAD_ARGS;
+    ov_stamp_now(&date, &time);
+    if (!rom_write_set(1u)) return ST_NO_ROM_WRITE;
+    pw_dst = FRAME_STASH_PI; pw_fill = 0; pw_total = 0; pw_len = 0; pw_ok = 1;
+    pw_a = 1; pw_b = 0; pw_an = 0;
+    pw_byte(0x89u); pw_byte(0x50u); pw_byte(0x4Eu); pw_byte(0x47u); pw_byte(0x0Du); pw_byte(0x0Au); pw_byte(0x1Au); pw_byte(0x0Au);
+    pw_chunk_open("IHDR", 13u);
+    pw_be32(w); pw_be32(h); pw_byte(8u); pw_byte(2u); pw_byte(0); pw_byte(0); pw_byte(0);   /* 8-bit RGB */
+    pw_chunk_close();
+    if (date) {                                        /* the cart's clock, for the file's name */
+        ov_stamp_text(stamp, date, time);              /* "20YY-MM-DD HH:MM" */
+        uint32_t n = 0;
+        while (stamp[n]) n++;
+        pw_chunk_open("tEXt", 14u + n + 3u);
+        const char *k = "Creation Time";
+        for (uint32_t i = 0; i < 14u; i++) pw_byte((uint32_t)(uint8_t)k[i]);   /* the keyword and its NUL */
+        for (uint32_t i = 0; i < n; i++) pw_byte((uint32_t)(uint8_t)stamp[i]);
+        pw_byte(':'); pw_byte('0' + ((time >> 4) & 0xFu)); pw_byte('0' + (time & 0xFu));   /* the seconds (BCD) */
+        pw_chunk_close();
+    }
+    png_raw_left = h * (1u + 3u * w);
+    png_first = 1u;
+    png_block_open();
+    for (uint32_t y = 0; y < h; y++) {
+        const uint8_t *row = shot_row(phys + y * stride, rowb);
+        png_raw(0);                                    /* filter: none */
+        if (s.bpp == 2u) {
+            const vu32 *src = (const vu32 *)row;
+            for (uint32_t x = 0; x < w; x += 2u) {
+                uint32_t v = *src++;
+                png_rgb5(v >> 16);
+                png_rgb5(v & 0xFFFFu);
+            }
+        } else {
+            const vu32 *src = (const vu32 *)row;
+            for (uint32_t x = 0; x < w; x++) {
+                uint32_t v = *src++;
+                png_raw(v >> 24); png_raw((v >> 16) & 0xFFu); png_raw((v >> 8) & 0xFFu);
+            }
+        }
+    }
+    png_block_close();
+    pw_chunk_open("IEND", 0);
+    pw_chunk_close();
+    pw_flush(1u);
+    rom_write_set(0);
+    if (!pw_ok) return ST_DMA_FAIL;
+    shot_len = pw_len;
+    return ST_OK;
+}
+
+/* the screenshot button was tapped (the resident hook's combo service) */
+static void shot_request(void) {
+    if (shot_state || st_pending || snap_active) return;
+    if (!hook_cfg.shot_sectors) {
+        feedback_show("NO SCREENSHOT FILE");
+        return;
+    }
+    if (!shot_room()) {
+        feedback_show("SCREENSHOTS FULL");    /* the file is emptied at the next visit to the menu */
+        return;
+    }
+    if (((sd_state == 1u) && (sd_kind == 1u)) || sd_shot_pending) {
+        feedback_show("SCREENSHOT BUSY");     /* the stash still holds the last one */
+        return;
+    }
+    shot_state = 1u;
+    shot_ticks = 0;
+}
+
+/* the screenshot, once the displayed frame is one without a message drawn on it (every
+ * exception looks, so a new buffer is caught before the feedback text goes on it) */
+static void shot_service(void) {
+    if (shot_state != 1u) return;
+    if (PI_STATUS & 3u) return;                        /* the game's DMA: next time */
+    uint32_t o = VI_ORIGIN_REG & 0x00FFFFFFu;
+    if (msg_ticks && (shot_ticks < 4u) && (fb_same_buffer(o) == fb_drawn)) return;
+    uint32_t cz = c0_cause();                          /* on a VI interrupt the freeze aims the field the game would */
+    uint32_t at_vi = (((cz & CAUSE_EXC_MASK) == 0) && (cz & CAUSE_IP2_RCP) && (MI_INTERRUPT & MI_INTR_VI)) ? 1u : 0u;
+    vi_frz_begin(at_vi);
+    uint32_t r = shot_capture();
+    vi_frz_end();
+    shot_state = 0;
+    crumb(0x69u, r, shot_len);
+    if (r != ST_OK) {
+        feedback_show("SCREENSHOT FAILED");
+        return;
+    }
+    if (!sd_write_begin_shot(shot_len)) {
+        crumb(0x6Au, sd_last_error, hook_cfg.shot_count);
+        feedback_show("SCREENSHOT FAILED");
+        return;
+    }
+    feedback_show("SCREENSHOT SAVED");
+}
+
+/* borrowed mode: the tap came through the monitor (op 7); the frame is taken and its copy
+ * to the card run to the end within the visit. No text: nothing of ours stays to draw it. */
+static uint32_t shot_borrow(void) {
+    if (!shot_room()) {
+        crumb(0x69u, ST_NO_ROOM, hook_cfg.shot_count);
+        return ST_NO_ROOM;
+    }
+    vi_frz_begin(1u);
+    uint32_t r = shot_capture();
+    vi_frz_end();
+    crumb(0x69u, r, shot_len);
+    if (r != ST_OK) return r;
+    if (!sd_write_begin_shot(shot_len)) {
+        crumb(0x6Au, sd_last_error, hook_cfg.shot_count);
+        return ST_SD_FAIL;
+    }
+    return ST_OK;
+}
+
 /* One visit: the action the monitor was asked for, synchronously. */
 static void borrow_run(void) {
     uint32_t op = BORROW_REQ & 0xFFu;
     borrow_mi = (BORROW_REQ >> 8) & 0x3Fu;   /* the monitor's moment (mt_trigger) */
     uint32_t cause = c0_cause();
     uint32_t c_in = c0_count(), cmp_in = c0_compare();   /* the game's clock as we found it */
-    uint32_t slot0 = hook_cfg.cur_slot;
+    uint32_t slot0 = hook_cfg.cur_slot, shot_fill0_in = hook_cfg.shot_fill;
     BORROW_REQ = 0;
     borrow_epilogue = MONITOR_KSEG1;      /* +0: mon_epilogue */
     crumb(0x60u, op, BORROW_GUARD);
@@ -3095,8 +4078,10 @@ static void borrow_run(void) {
     }
     uint32_t pc_status = ST_OK;
     if (op == 5u) {
-        pc_status = shot_take();      /* a screenshot: no state machinery involved */
+        pc_status = shot_take();      /* a screenshot for the PC: no state machinery involved */
         crumb(0x64u, pc_status, hook_cfg.pc_shot);
+    } else if (op == 7u) {
+        pc_status = shot_borrow();    /* the screenshot button (or a PC's request): the frame to the card */
     } else if (op == 6u) {
         pc_status = pak_borrow();     /* the virtual pak's service: the site, the card mirror */
         crumb(0x65u, pc_status, tramp_state);
@@ -3123,14 +4108,15 @@ static void borrow_run(void) {
     }
     /* the SD mirror of a save, to the end */
     t0 = c0_count();
-    while ((sd_state == 1u) || sd_pending_slot) {
+    while ((sd_state == 1u) || sd_pending_slot || sd_shot_pending) {
         sd_service();
         if ((c0_count() - t0) > 46875u * 30000u) break;
         exit_wait_ms(1u);
     }
     rom_write_set(0);
-    if (hook_cfg.cur_slot != slot0) {
-        /* the slot chosen on the panel, into the staged copy: the next visit starts from it */
+    if ((hook_cfg.cur_slot != slot0) || (hook_cfg.shot_fill != shot_fill0_in)) {
+        /* the slot chosen on the panel, or a screenshot's place in the file, into the staged
+         * copy: the next visit starts from it (a visit's statics do not survive it) */
         if (rom_write_set(1u)) {
             dcache_writeback_all();
             pi_dma((uint32_t)(uintptr_t)&hook_cfg, HOOK_STAGING_PI + ((uint32_t)(uintptr_t)&hook_cfg - 0x807D0000u), sizeof(hook_cfg), 1u);
@@ -3147,7 +4133,7 @@ static void borrow_run(void) {
      * the epilogue's are a few frames at most). A load never gets here. */
     c0_set_count(c_in + 400u);
     c0_set_compare(cmp_in);
-    borrow_pc_ack((op == 5u) ? pc_status : st_last_status);
+    borrow_pc_ack(((op == 5u) || (op == 7u) || ((op == 3u) && (borrow_pc & 0xFF00u))) ? pc_status : st_last_status);
     crumb(0x62u, st_last_status, sd_state);
 }
 
@@ -3206,6 +4192,7 @@ void hook_tick(void) {
 
     {
         SEC_T0();
+        shot_service();                  /* a screenshot asked for: the displayed frame, before any text goes on it */
         feedback_service();              /* the message into a buffer that just became the displayed one */
         SEC_END(dbg_sec_fb);
     }
@@ -3230,7 +4217,9 @@ void hook_tick(void) {
     dbg_gate_pass++;
     TR_STAGE = 4; /* DIAG: VI gate passed */
     cart_stalled = 0; /* retry the cart each tick */
+    pad_vi_refresh();                                /* the buttons from the last transfer's block, for games whose SI completions raise no exception */
     combo_service();                                 /* v6: save/load/menu combos (pad read at SI time) */
+    if (shot_state) shot_ticks++;
     {
         SEC_T0();
         feedback_tick();
@@ -3283,6 +4272,9 @@ void hook_tick(void) {
 
 out:
     TR_STAGE = 5; /* DIAG: C leaving */
+    if (vi_frz_ended) {
+        vi_resume_align();        /* the game's VI handler runs in the vblank, not mid-frame */
+    }
     if (pi_touched && pi_wait()) {
         PI_DRAM_ADDR = pi_saved_dram;
         PI_CART_ADDR = pi_saved_cart;

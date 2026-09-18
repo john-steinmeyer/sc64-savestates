@@ -47,7 +47,8 @@ typedef enum {
     MENU_MODE_FAVORITE,
     MENU_MODE_HISTORY,
     MENU_MODE_DATEL_CODE_EDITOR,
-    MENU_MODE_EXTRACT_FILE
+    MENU_MODE_EXTRACT_FILE,
+    MENU_MODE_HOTKEYS,          /**< SC64SS: the save state hotkeys */
 } menu_mode_t;
 
 /** @brief File entry type enumeration */
@@ -145,6 +146,8 @@ typedef struct {
         bool emulator_file;
         bool extract_file;
     } load_pending;
+
+    bool hotkeys_for_rom;       /**< SC64SS: the hotkeys view edits the loaded ROM's own (else the menu's) */
 } menu_t;
 
 

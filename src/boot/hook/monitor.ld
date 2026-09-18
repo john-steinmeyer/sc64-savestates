@@ -6,11 +6,11 @@ SECTIONS {
     . = MON_BASE;
     .text : { KEEP(*(.text)) }
     /* the virtual Controller Pak's server (mon_pak_hit: the RAM stub at 0x060 jumps to
-     * MONITOR_KSEG1 + 0x1000, hook.c MON_PAK_OFF) */
-    . = MON_BASE + 0x1000;
+     * MONITOR_KSEG1 + 0x1200, hook.c MON_PAK_OFF) */
+    . = MON_BASE + 0x1200;
     .pak : { KEEP(*(.text.pak)) }
-    /* the load epilogue (mon_epi_load, hook.c jumps to MONITOR_KSEG1 + 0x2000, MON_EPIL_OFF) */
-    . = MON_BASE + 0x2000;
+    /* the load epilogue (mon_epi_load, hook.c jumps to MONITOR_KSEG1 + 0x2200, MON_EPIL_OFF) */
+    . = MON_BASE + 0x2200;
     .epil : { KEEP(*(.text.epil)) }
     /* the gate installer (mon_install) at a fixed offset: build.sh passes MON_INSTALL
      * (= MON_BASE + 0x3000) to lowpage.S, whose trampoline jumps there */

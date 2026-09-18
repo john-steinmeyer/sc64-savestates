@@ -30,7 +30,7 @@ struct ov_screen {
 
 static uint32_t thumb_buf[THUMB_BYTES / 4u] __attribute__((aligned(16))) = {0};
 static uint32_t thumb_ready = 0;               /* thumb_buf holds the frame the next save belongs to */
-static uint32_t fb_origins[3] = {0};           /* the last few displayed buffers: feedback is drawn on all */
+/* (fb_origins, the last few displayed buffers, is defined ahead of ov_field_base below) */
 static uint32_t fb_expect_width = 0;             /* the loaded world's VI_WIDTH: draw only once the live VI agrees */
 static const char *msg_text = 0;
 static uint32_t msg_ticks = 0;
@@ -44,10 +44,31 @@ static uint32_t ov_rgb(const struct ov_screen *s, uint32_t r, uint32_t g, uint32
     return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
 }
 
+static uint32_t fb_origins[3] = {0};           /* the last few displayed buffers: feedback is drawn on all */
+
+/* An interlaced mode shows one buffer from two origins a line apart (the odd field's a
+ * line in). The buffer begins at the lower one: anything drawn over its full height from
+ * the other runs a line past its end, into whatever the game keeps there (a 640x480
+ * game's heap: the panel's dimming corrupted a chunk header and its next free crashed). */
+static uint32_t ov_field_base(uint32_t origin) {
+    if (!vi_fld_lineoff || (vi_fld_seen != 3u)) return origin;
+    uint32_t d = (vi_fld_lineoff > 0) ? (uint32_t)vi_fld_lineoff : (uint32_t)(-vi_fld_lineoff);
+    if (((vi_fld_origin[0] + d) == vi_fld_origin[1]) || ((vi_fld_origin[1] + d) == vi_fld_origin[0])) {
+        uint32_t lo = (vi_fld_origin[0] < vi_fld_origin[1]) ? vi_fld_origin[0] : vi_fld_origin[1];
+        if ((origin == lo) || (origin == lo + d)) return lo;
+    }
+    for (uint32_t k = 0; k < 3u; k++) {
+        if (fb_origins[k] && (origin == fb_origins[k] + d)) return fb_origins[k];
+        if (fb_origins[k] && (fb_origins[k] == origin + d)) return origin;
+    }
+    return origin;
+}
+
 static void ov_screen_read(struct ov_screen *s) {
     uint32_t status = VI_STATUS_REG, origin = VI_ORIGIN_REG & 0x00FFFFFFu, width = VI_WIDTH_REG;
     uint32_t vv = VI_V_VIDEO_REG, ys = VI_Y_SCALE_REG & 0xFFFu;
     if (vi_frz_active && vi_frz_base0) origin = vi_frz_base0;   /* ORIGIN alternates per field during a freeze */
+    origin = ov_field_base(origin);
     s->fb = 0xA0000000u | origin;
     s->width = width;
     s->bpp = ((status & 3u) == 3u) ? 4u : 2u;
@@ -382,6 +403,22 @@ static void menu_rom_title(char *d) {
     while ((p > d) && (p[-1] == ' ')) *--p = 0;   /* trailing blanks */
 }
 
+/* a button mask as text, in the menu's order: "L+R+START" */
+static const char *const btn_names[14] = {"L", "R", "Z", "A", "B", "START", "UP", "DOWN", "LEFT", "RIGHT",
+                                          "C-UP", "C-DOWN", "C-LEFT", "C-RIGHT"};
+static const uint8_t btn_bits[14] = {5, 4, 13, 15, 14, 12, 11, 10, 9, 8, 3, 2, 1, 0};
+static char *combo_text(uint32_t mask, char *d) {
+    char *p = d;
+    *p = 0;
+    for (uint32_t i = 0; i < 14u; i++) {
+        if (!(mask & (1u << btn_bits[i]))) continue;
+        if (p != d) *p++ = '+';
+        p = ov_cat(p, btn_names[i]);
+    }
+    if (p == d) ov_cat(d, "NONE");
+    return d;
+}
+
 static const char *const speed_names[5] = {"NORMAL", "1/2", "1/4", "1/8", "STEP"};
 static const uint32_t speed_divs[5] = {1u, 2u, 4u, 8u, SPEED_STEP};
 static const char *const sound_names[2] = {"PITCH DOWN", "STUTTER"};
@@ -433,6 +470,8 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
 
     uint32_t cur = hook_cfg.cur_slot < n ? hook_cfg.cur_slot : 0;
     uint32_t prev = 0xFFFFu, confirm = 0, result = 0, redraw = 1, page = 0, grow = 0, exit_after = 0;
+    uint32_t pak_on = (hook_cfg.spare & 4u) ? 1u : 0u, rows = pak_on ? 5u : 4u;   /* the Game page's rows: SPEED, SOUND, EXIT, SUSPEND, PAK */
+    if (pak_on && !borrowed_mode()) pak_live_from_cfg();
     if (borrowed_mode()) grow = 2u;              /* the Game page's speed rows need the Slow motion option (the resident hook) */
     uint32_t last_move = c0_count();
     const char *note = 0;
@@ -467,7 +506,12 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     ov_rect(&s, tx, ty, THUMB_W * sc, THUMB_H * sc, dark);
                     ov_text(&s, tx + 12u * sc, ty + 26u * sc, slots[cur].state ? "NO IMAGE" : "EMPTY", grey);
                 }
-                const char *foot = confirm ? "OVERWRITE?  A YES   B NO" : "A LOAD  Z SAVE  B CLOSE  R:GAME";
+                if (!confirm && ((30u + n * 14u + 30u + 8u) * sc <= h)) {   /* room under the last slot row */
+                    char hk[80], kb[40];
+                    ov_cat(ov_cat(ov_cat(ov_cat(hk, "SAVE "), combo_text(hook_cfg.combo_save, kb)), "  LOAD "), combo_text(hook_cfg.combo_load, kb));
+                    ov_text(&s, x0 + 8u * sc, y0 + h - 30u * sc, hk, grey);   /* clear of the footer's box (h - 18) */
+                }
+                const char *foot = confirm ? "OVERWRITE?  A YES   B NO" : "A LOAD  Z SAVE  B CLOSE  > GAME";
                 menu_footer(&s, x0, y0, w, h, foot, confirm ? red : white);
             } else {
                 char *p;
@@ -490,22 +534,39 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 p = ov_dec(p, cur + 1u);
                 ov_cat(p, "");
                 ov_text(&s, x0 + 8u * sc, y0 + 72u * sc, line, (grow == 3u) ? hi : white);
+                if (pak_on) {
+                    p = ov_cat(line, (grow == 4u) ? "> PAK       < " : "  PAK       < ");
+                    if (vpak_in) {
+                        p = ov_cat(p, "IN PORT ");
+                        p = ov_dec(p, vpak_ch + 1u);
+                    } else {
+                        p = ov_cat(p, "OUT");
+                    }
+                    ov_cat(p, " >");
+                    ov_text(&s, x0 + 8u * sc, y0 + 86u * sc, line, (grow == 4u) ? hi : white);
+                }
                 if (confirm == 2u) {
                     menu_footer(&s, x0, y0, w, h, "LEAVE THE GAME?  A YES   B NO", red);
                 } else if (confirm == 3u) {
                     menu_footer(&s, x0, y0, w, h, slots[cur].state ? "OVERWRITE AND LEAVE?  A YES  B NO" : "SAVE AND LEAVE?  A YES   B NO", red);
                 } else {
+                    uint32_t hy = pak_on ? 106u : 92u;   /* the hint lines, under the last row */
                     if (speed_div == SPEED_STEP) {
-                        ov_text(&s, x0 + 8u * sc, y0 + 92u * sc, "TAP Z FOR ONE FRAME", grey);
-                        ov_text(&s, x0 + 8u * sc, y0 + 102u * sc, "R+Z+START FOR THIS PANEL", grey);
+                        char hk[80], kb[40];
+                        ov_cat(ov_cat(ov_cat(hk, "TAP "), combo_text(step_button(), kb)), " FOR ONE FRAME");
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, hk, grey);
+                        ov_cat(ov_cat(hk, combo_text(hook_cfg.combo_menu, kb)), " FOR THIS PANEL");
+                        ov_text(&s, x0 + 8u * sc, y0 + (hy + 10u) * sc, hk, grey);
                     } else if (speed_div > 1u) {
-                        ov_text(&s, x0 + 8u * sc, y0 + 92u * sc, slow_sound ? "SOUND PLAYS WITH GAPS" : "SOUND SLOWED WITH THE GAME", grey);
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, slow_sound ? "SOUND PLAYS WITH GAPS" : "SOUND SLOWED WITH THE GAME", grey);
                     } else if (grow == 2u) {
-                        ov_text(&s, x0 + 8u * sc, y0 + 92u * sc, "BACK TO THE SC64 MENU", grey);
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, "BACK TO THE SC64 MENU", grey);
                     } else if (grow == 3u) {
-                        ov_text(&s, x0 + 8u * sc, y0 + 92u * sc, "THE NEXT LAUNCH RESUMES HERE", grey);
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, "THE NEXT LAUNCH RESUMES HERE", grey);
+                    } else if (grow == 4u) {
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, vpak_in ? "IN: THE GAME SEES THIS PAK IN THE PORT" : "OUT: THE GAME SEES THE REAL SLOT", grey);
                     }
-                    menu_footer(&s, x0, y0, w, h, (grow >= 2u) ? "A SELECT   B CLOSE   L:SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
+                    menu_footer(&s, x0, y0, w, h, ((grow == 2u) || (grow == 3u)) ? "A SELECT   B CLOSE   < SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
                 }
             }
             if (note) ov_text(&s, x0 + w - 8u * sc - 7u * sc * 12u, y0 + 8u * sc, note, hi);
@@ -559,12 +620,25 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
             }
         } else if (page == 1u) {
             if (up || down) {
-                if (borrowed_mode()) {
-                    grow = (grow == 2u) ? 3u : 2u;   /* EXIT and SUSPEND only */
+                if (borrowed_mode()) {                /* EXIT, SUSPEND and PAK only */
+                    uint32_t k = grow - 2u, m = rows - 2u;
+                    grow = 2u + (up ? ((k + m - 1u) % m) : ((k + 1u) % m));
                 } else {
-                    grow = up ? ((grow + 3u) % 4u) : ((grow + 1u) % 4u);
+                    grow = up ? ((grow + rows - 1u) % rows) : ((grow + 1u) % rows);
                 }
                 redraw = 1;
+            }
+            if ((grow == 4u) && (left || right || (pressed & 0x8000u))) {   /* the pak: out, or in at port 1..4 */
+                uint32_t st = vpak_in ? (vpak_ch + 1u) : 0u;
+                st = left ? ((st + 4u) % 5u) : ((st + 1u) % 5u);
+                pak_live_change(st);
+                if (!pak_live_store()) note = "CART BUSY";
+                redraw = 1;
+            }
+            if (((grow == 2u) || (grow == 3u)) && (left || right)) {   /* no value here: the other page */
+                page = 0;
+                redraw = 1;
+                continue;
             }
             if ((grow < 2u) && (left || right || (pressed & 0x8000u))) {
                 if (grow == 0) {
@@ -575,7 +649,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     slow_sound ^= 1u;
                 }
                 redraw = 1;
-            } else if ((grow >= 2u) && (pressed & 0x8000u)) {   /* A: exit, or suspend */
+            } else if (((grow == 2u) || (grow == 3u)) && (pressed & 0x8000u)) {   /* A: exit, or suspend */
                 if ((grow == 3u) && (sd_state == 1u)) { note = "CARD BUSY"; redraw = 1; continue; }
                 confirm = (grow == 2u) ? 2u : 3u;
                 redraw = 1;
@@ -597,6 +671,11 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
             if (up || down) {
                 cur = up ? ((cur + n - 1u) % n) : ((cur + 1u) % n);
                 redraw = 1;
+            }
+            if (left || right) {                  /* the Game page, as L and R */
+                page = 1u;
+                redraw = 1;
+                continue;
             }
             if (pressed & 0x4000u || pressed & 0x1000u) {   /* B or Start: close */
                 result = 0;
@@ -680,10 +759,12 @@ static uint32_t fb_same_buffer(uint32_t origin) {
     if (vi_fld_lineoff && (vi_fld_seen == 3u)) {
         uint32_t d = (uint32_t)vi_fld_lineoff;
         for (uint32_t k = 0; k < 3u; k++) {
-            if (fb_origins[k] && ((origin == fb_origins[k] + d) || (origin == fb_origins[k] - d))) return fb_origins[k];
+            if (fb_origins[k] && ((origin == fb_origins[k] + d) || (origin == fb_origins[k] - d))) {
+                return (fb_origins[k] < origin) ? fb_origins[k] : origin;   /* the buffer's base */
+            }
         }
     }
-    return origin;
+    return ov_field_base(origin);
 }
 
 static void feedback_service(void) {

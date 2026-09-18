@@ -317,7 +317,10 @@ static io32_t *cheats_emit_copy (io32_t *p, uint32_t src, uint32_t dst, uint32_t
     return p;
 }
 
-bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads) {
+_Static_assert(PATCHER_ADDRESS == SC64SS_LDBOOT_PATCHER_RAM, "cheats.h: the libdragon stub restores the patcher here");
+_Static_assert(ENGINE_TEMPORARY_ADDRESS == SC64SS_LDBOOT_ENGINE_RAM, "cheats.h: the libdragon stub restores the engine's copy here");
+
+bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads, bool libdragon) {
     if (!cheat_list) {
         return false;
     }
@@ -328,7 +331,10 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     io32_t *patcher_start = (io32_t *)(PATCHER_ADDRESS);
     io32_t *patcher_p = patcher_start;
 
-    if (cheats_patch_ipl3(cic_type, patcher_start)) {
+    // SC64SS: libdragon's IPL3 is not patched in DMEM; its third stage on the cart is
+    // pointed at the stub instead (boot.c), which enters this patcher with the
+    // entrypoint in t1, as a retail IPL3 does.
+    if (!libdragon && cheats_patch_ipl3(cic_type, patcher_start)) {
         return false;
     }
 
@@ -732,6 +738,20 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
         }
     }
 
+    if (libdragon) {
+        // SC64SS: a libdragon game's exception vectors arrive with its ELF, by DMA, before
+        // this runs, so the watchpoint below never sees the store it would redirect. Move
+        // the game's vector (`j` to its handler, and the delay slot) to the relocated
+        // address now; the engine's jump then takes the vector as for any other game.
+        *patcher_p++ = I_LUI(REG_K0, 0xA000);
+        *patcher_p++ = I_LW(REG_K1, A_OFFSET(EXCEPTION_HANDLER_ADDRESS), REG_K0);
+        *patcher_p++ = I_SW(REG_K1, A_OFFSET(RELOCATED_EXCEPTION_HANDLER_ADDRESS), REG_K0);
+        *patcher_p++ = I_LW(REG_K1, A_OFFSET(EXCEPTION_HANDLER_ADDRESS) + 4, REG_K0);
+        *patcher_p++ = I_SW(REG_K1, A_OFFSET(RELOCATED_EXCEPTION_HANDLER_ADDRESS) + 4, REG_K0);
+        *patcher_p++ = I_LUI(REG_K0, A_BASE(RELOCATED_EXCEPTION_HANDLER_ADDRESS));
+        *patcher_p++ = I_CACHE(HIT_INVALIDATE_I, A_OFFSET(RELOCATED_EXCEPTION_HANDLER_ADDRESS), REG_K0);
+    }
+
     // Write jump instruction to the exception handler
     *patcher_p++ = I_LUI(REG_K0, A_BASE(EXCEPTION_HANDLER_ADDRESS));
     *patcher_p++ = I_ADDIU(REG_K0, REG_K0, A_OFFSET(EXCEPTION_HANDLER_ADDRESS));
@@ -757,7 +777,12 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     // placement; it booted before the read watch existed), so the menu passes
     // watch_reads = false for the titles on its list and for watch_reads=0 in a
     // ROM's ini: the watchpoint then covers writes only, as in the first release.
-    if (SC64SS_BISECT != 4) {   // bisect 4: no watchpoint (the game's own vector write goes through)
+    // SC64SS: not for a libdragon game. Its vectors came with its ELF and are never
+    // rewritten, so the watchpoint has nothing to catch, and an access to the vector
+    // words from inside an exception (deferred by the CPU until the game resumes) made
+    // the relocation above rewrite a register of the game's next instruction instead:
+    // a Watch exception reported at the return from enable_interrupts, every time.
+    if ((SC64SS_BISECT != 4) && !libdragon) {   // bisect 4: no watchpoint (the game's own vector write goes through)
     *patcher_p++ = I_ORI(REG_K1, REG_ZERO, EXCEPTION_HANDLER_ADDRESS | WATCHLO_W | ((SC64SS_WATCH_READS && watch_reads) ? WATCHLO_R : 0));
     *patcher_p++ = I_MTC0(REG_K1, C0_REG_WATCH_LO);
     *patcher_p++ = I_MTC0(REG_ZERO, C0_REG_WATCH_HI);
@@ -836,6 +861,24 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     DIAG_PI_WAIT();
     #undef DIAG_PI_WAIT
 
+    if (libdragon && !hook_borrowed) {
+        // SC64SS: a libdragon game takes its memory size from the boot flags in DMEM (a
+        // retail game reads the word at 0x318) and puts its stack at the top of it. With
+        // the hook resident there, the game gets 256 KiB less, its stack moved down with
+        // it: still an Expansion Pak by libdragon's own test.
+        *patcher_p++ = I_LUI(REG_K0, 0xA400);
+        *patcher_p++ = I_LW(REG_K1, 0x0000, REG_K0);
+        *patcher_p++ = I_LUI(REG_T3, 0x0004);
+        *patcher_p++ = I_SUBU(REG_K1, REG_K1, REG_T3);
+        *patcher_p++ = I_SW(REG_K1, 0x0000, REG_K0);
+        // and the stack pointer with it: the loader set it to the top of the full size one
+        // instruction before this stub took over, and the entry code keeps it (a stack up
+        // there sits inside the hook's home and outside the saved image: a load put back
+        // registers that pointed into a stack the state never held, and games with a call
+        // depth that varies from frame to frame crashed on the first load)
+        *patcher_p++ = I_SUBU(REG_SP, REG_SP, REG_T3);
+    }
+
     // Jump back to the game code
     *patcher_p++ = I_JR(REG_T1);
     *patcher_p++ = I_NOP();
@@ -844,4 +887,37 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     cheats_update_cache(patcher_start, patcher_p);
 
     return true;
+}
+
+// SC64SS: the stub a libdragon ROM's third boot stage jumps to, on the cart (cheats.h).
+// It runs from the cart, so it only reads the cart: the patcher's 4 KiB and the engine's
+// temporary copy go back to their RAM addresses with uncached stores (the boot code
+// emptied both caches), then the entrypoint moves to t1 and the patcher runs as after a
+// retail IPL3.
+uint32_t cheats_libdragon_stub (uint32_t *out) {
+    uint32_t n = 0;
+    const uint32_t regions[2][2] = {
+        { 0xB0000000UL | (SC64SS_LDBOOT_PI + SC64SS_LDBOOT_PATCHER_OFF), 0xA0000000UL | (PATCHER_ADDRESS & 0x1FFFFFFFUL) },
+        { 0xB0000000UL | (SC64SS_LDBOOT_PI + SC64SS_LDBOOT_ENGINE_OFF), 0xA0000000UL | (ENGINE_TEMPORARY_ADDRESS & 0x1FFFFFFFUL) },
+    };
+    for (int r = 0; r < 2; r++) {
+        out[n++] = I_LUI(REG_T3, regions[r][0] >> 16);
+        out[n++] = I_ORI(REG_T3, REG_T3, regions[r][0] & 0xFFFF);
+        out[n++] = I_LUI(REG_T5, regions[r][1] >> 16);
+        out[n++] = I_ORI(REG_T5, REG_T5, regions[r][1] & 0xFFFF);
+        out[n++] = I_ORI(REG_T4, REG_ZERO, SC64SS_LDBOOT_REGION_WORDS);
+        out[n++] = I_LW(REG_K1, 0, REG_T3);
+        out[n++] = I_SW(REG_K1, 0, REG_T5);
+        out[n++] = I_ADDIU(REG_T3, REG_T3, 4);
+        out[n++] = I_ADDIU(REG_T5, REG_T5, 4);
+        out[n++] = I_ADDIU(REG_T4, REG_T4, -1);
+        out[n++] = I_BGTZ(REG_T4, -6);
+        out[n++] = I_NOP();
+    }
+    out[n++] = I_OR(REG_T1, REG_A0, REG_ZERO);
+    out[n++] = I_LUI(REG_K0, A_BASE(PATCHER_ADDRESS));
+    out[n++] = I_ADDIU(REG_K0, REG_K0, A_OFFSET(PATCHER_ADDRESS));
+    out[n++] = I_JR(REG_K0);
+    out[n++] = I_NOP();
+    return n;
 }

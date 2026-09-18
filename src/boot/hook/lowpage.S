@@ -31,7 +31,8 @@
 #                 +30 LASTVI (Count at the last tick taken), +34 SISEEN / +38 SIOK (SI
 #                 completions entered / that gave the buttons), +3C SIBLK (dev: the
 #                 first word of the block last looked at), +40 PIDRAM / +44 PICART (the
-#                 game's PI address registers, put back on every way out)
+#                 game's PI address registers, put back on every way out), +48 SIAGE
+#                 (ticks since an SI completion last gave the buttons)
 #   0x1DC..0x200  PRE_INSTALL: the engine's tail lands here on every exception until the
 #                 gate is in (see below); after that the tail is j 0x360 and the cart
 #                 installer copies EXIT over these words: the way back to the game after

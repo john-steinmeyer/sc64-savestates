@@ -16,8 +16,8 @@
 # config block, kseg1), HOOK_LEN1 (the blob's 16-aligned size minus one), STAGING_PI, STASH_PI,
 # LP_DMA, LP_PIO_W, LP_EXIT, LP_EXIT_ERET (lowpage.S), CTX_KSEG1 (the
 # loaded context's cart copy). Layout: mon_epilogue at +0, mon_tick at +0x100 (the
-# gate's target), mon_pak_hit at +0x1000 (the virtual pak's server), mon_epi_load at
-# +0x2000 (the hook's target after a load), mon_install at +0x3000 (monitor.ld; the
+# gate's target), mon_pak_hit at +0x1200 (the virtual pak's server), mon_epi_load at
+# +0x2200 (the hook's target after a load), mon_install at +0x3000 (monitor.ld; the
 # engine's tail until the gate is in). 16 KiB in all (hook.c MONITOR_LEN).
 # Every way back to the game goes through a RAM stub that restores the PI address
 # registers last: code fetched from the cart is PIO, and every PIO access lands in
@@ -34,6 +34,8 @@
 .set CFG_COMBO_HOLD,    0x30
 .set CFG_COMBO_ENABLED, 0x34
 .set CFG_COMBO_MENU,    0x60
+.set CFG_COMBO_SHOT,    0xA4
+.set SHOT_FLAG,         0xBFFE0F60      # cart buffer word: the screenshot button was down at the last tick
 .set CFG_SPARE,         0x6C
 .set CFG_WATCH0,        0x70                # (dev) four RAM addresses the heartbeat samples
 .set CFG_PC_REQ,        0x80                # a request from the PC: op in the low byte
@@ -57,6 +59,7 @@
 .set D_PCPAD,   0x1CC                   # the PC's pad request: the sequence seen << 16 | polls left
 .set D_PIDRAM,  0x1D0                   # the game's PI_DRAM_ADDR (the tick takes it) ...
 .set D_PICART,  0x1D4                   # ... and PI_CART_ADDR (the gate takes it): restored last
+.set D_SIAGE,   0x1D8                   # ticks since an SI completion last gave the buttons
 .set D_SITERA,  0x1B4                   # the pak server's entry from the game's handler: its ra
 # the virtual Controller Pak's control block on the cart (hook.c VPAK_CTL_PI; build.sh
 # passes PAK_CTL, its kseg1 address, and VPAK_KSEG1, the image's): the menu writes it at
@@ -74,6 +77,8 @@
 .set PAK_CTL_SCHEME, 0x10               # 1: the site's jal comes here and goes back to its own send_mesg;
                                         # 2: the four words were ours (a kuseg handler): send_mesg from here
 .set PAK_CTL_VEC,    0x28               # send_mesg, the word after the jal's delay slot, a0, rX | lo << 16
+.set PAK_CTL_LIVE,   0x38               # the live word (hook.c PAK_LIVE_*): bits 0..1 the channel the pak sits in,
+                                        # 0x10 inserted, 0x20 "pak changed" to report on the channel's next identify
 .set CTX_CLOCK,      0x220              # after the context: the game's Count and Compare across a borrow
 
 .macro SAVE_REGS
@@ -175,17 +180,6 @@ mon_epilogue:
 # does nothing, as the resident hook does it)
 # a combo fully held is the monitor's, not the game's: its buttons are cleared in the
 # block the game is about to read (a1 = the mask, t3 = the buttons, a2 = the entry)
-.macro CLEARIF cfg
-    lw      $a1, \cfg($t1)
-    beqz    $a1, 5f
-    and     $a3, $t3, $a1
-    bne     $a3, $a1, 5f
-    nop
-    sb      $zero, 3($a2)
-    sb      $zero, 4($a2)
-5:
-.endm
-
 .macro COMBO hold, op
     beqz    $a0, 1f
     and     $a2, $t3, $a0
@@ -266,9 +260,10 @@ mon_tick:
     lui     $t3, 0xA000
     or      $t2, $t2, $t3
     addiu   $a3, $t2, -0x38
-    # the virtual Controller Pak (cfg spare bit 2): channel 0's accessory command in the
-    # block that ends here is answered now, unless the game's handler has been patched to
-    # do it at its own SI acknowledge (control block state 1: mon_pak_hit below), which
+    # the virtual Controller Pak (cfg spare bit 2): the accessory command of the channel
+    # the pak sits in, in the block that ends here, is answered now, unless the game's
+    # handler has been patched to do it at its own SI acknowledge (control block state 1:
+    # mon_pak_hit below), which
     # also catches the completions libultra finds already pending while in for another
     # interrupt. mp_serve clobbers the tick's working registers: the block is found again.
     lui     $t1, %hi(CFG_ADDR)
@@ -298,25 +293,71 @@ mon_tick:
     nop
     jal     mt_parse
     addiu   $a0, $a3, 0x38
-    beqz    $v0, 2f
-    nop
+    beqz    $v0, mt_vi                  # no controller data in either block (by name: the hide
+    nop                                 # block below has numeric labels of its own)
 1:  sw      $t3, D_PAD($k0)             # the buttons, for the ticks to come
     addiu   $t1, $zero, 1
     sw      $t1, D_PADOK($k0)
+    sw      $zero, D_SIAGE($k0)         # (the tick's refresh stands down)
     lw      $t1, D_SIOK($k0)
     addiu   $t1, $t1, 1
     sw      $t1, D_SIOK($k0)
     # a fully held combo is cleared from the game's block (as the resident hook does):
-    # no pause under R+Z+Start, no menu moves under L+R+D-pad. mt_parse left a0 = the
+    # no pause under the panel combo, no menu moves under L+R+D-pad. mt_parse left a0 = the
     # block and t0 = channel 0's entry; the buttons are its bytes 3 and 4.
     lui     $t1, %hi(CFG_ADDR)
     addiu   $t1, $t1, %lo(CFG_ADDR)
     lw      $a1, CFG_COMBO_ENABLED($t1)
     beqz    $a1, 6f
     addu    $a2, $a0, $t0
-    CLEARIF CFG_COMBO_SAVE
-    CLEARIF CFG_COMBO_LOAD
-    CLEARIF CFG_COMBO_MENU
+    # (t1 = the cfg block, a2 = channel 0's entry, t3 = the buttons) a0: the buttons to
+    # hide, the masks of the combos fully held
+    lw      $a1, CFG_COMBO_SAVE($t1)
+    lw      $a3, CFG_COMBO_LOAD($t1)
+    lw      $v0, CFG_COMBO_MENU($t1)
+    move    $a0, $zero
+    lw      $t2, CFG_COMBO_SHOT($t1)    # the screenshot button, held: the routine's alone
+    beqz    $t2, 0f                     # (a2 = channel 0's entry stays; a0 is the temp)
+    nop
+    and     $a0, $t3, $t2
+    bne     $a0, $t2, 0f
+    move    $a0, $zero
+    move    $a0, $t2
+0:  and     $t2, $t3, $a1
+    bne     $t2, $a1, 1f
+    nop
+    or      $a0, $a0, $a1
+1:  and     $t2, $t3, $a3
+    bne     $t2, $a3, 2f
+    nop
+    or      $a0, $a0, $a3
+2:  and     $t2, $t3, $v0
+    bne     $t2, $v0, 3f
+    nop
+    or      $a0, $a0, $v0
+3:  beqz    $a0, 6f                     # none held
+    ori     $t2, $zero, 0xFFFF          # the buttons all the combos share (L + R as configured)
+    beqz    $a1, 4f                     # stay visible: the game saw them held already, and would
+    nop                                 # see them released and pressed again around a tap of the
+    and     $t2, $t2, $a1               # D-pad or Start. A lone combo hides all of itself.
+4:  beqz    $a3, 5f
+    nop
+    and     $t2, $t2, $a3
+5:  beqz    $v0, 7f
+    nop
+    and     $t2, $t2, $v0
+7:  beq     $t2, $a0, 8f
+    nor     $t2, $t2, $zero             # (the delay slot: ~common, unused past the branch)
+    and     $a0, $a0, $t2
+8:  lbu     $a1, 3($a2)
+    lbu     $a3, 4($a2)
+    sll     $a1, $a1, 8
+    or      $a1, $a1, $a3
+    nor     $a0, $a0, $zero
+    and     $a1, $a1, $a0
+    srl     $a3, $a1, 8
+    sb      $a3, 3($a2)
+    sb      $a1, 4($a2)
 6:  # a PC's pad over USB (press/hold/stick): cfg pc_pad = buttons << 16 |
     # x << 8 | y, pc_padn = a sequence << 16 | the polls it lasts. The count runs in
     # RAM (D_PCPAD: the sequence seen, polls left; the monitor cannot write the cart's
@@ -368,7 +409,48 @@ mt_vi:
     addiu   $t0, $t0, 1
     sw      $t0, D_TICKS($k0)
     DEVFPS
-    lui     $t1, %hi(CFG_ADDR)
+    # the buttons from the block of the last completed transfer, at every tick as well:
+    # a libdragon game serves most of its controller transfers with interrupts off and
+    # no SI exception at all (its synchronous joybus path polls the SI and acknowledges
+    # it itself). With the SI idle, the block is complete: the one that ends at
+    # SI_DRAM_ADDR, or the one that starts there. Not within a few ticks of a completion
+    # that gave the buttons: a held combo was cleared from that block, and a game that
+    # polls every other frame would read as released on the frames between.
+    lw      $t0, D_SIAGE($k0)
+    addiu   $t0, $t0, 1
+    sw      $t0, D_SIAGE($k0)
+    sltiu   $t1, $t0, 4
+    bnez    $t1, 8f
+    nop
+    lui     $t1, 0xA480
+    lw      $t0, 0x0018($t1)            # SI_STATUS
+    andi    $t0, $t0, 0x0003
+    bnez    $t0, 8f                     # a transfer in flight
+    lw      $t2, 0x0000($t1)            # SI_DRAM_ADDR
+    lui     $t3, 0x0100
+    addiu   $t3, $t3, -1
+    and     $t2, $t2, $t3
+    sltiu   $t1, $t2, 0x38
+    bnez    $t1, 8f                     # nothing sensible there yet (boot)
+    lui     $t3, 0x0080
+    addiu   $t3, $t3, -0x40
+    sltu    $t1, $t3, $t2
+    bnez    $t1, 8f                     # beyond 8 MiB - 64: not a block of the game's
+    lui     $t3, 0xA000
+    or      $t2, $t2, $t3
+    addiu   $a3, $t2, -0x38
+    jal     mt_parse
+    move    $a0, $a3
+    bnez    $v0, 7f
+    nop
+    jal     mt_parse
+    addiu   $a0, $a3, 0x38
+    beqz    $v0, 8f
+    nop
+7:  sw      $t3, D_PAD($k0)
+    addiu   $t1, $zero, 1
+    sw      $t1, D_PADOK($k0)
+8:  lui     $t1, %hi(CFG_ADDR)
     addiu   $t1, $t1, %lo(CFG_ADDR)     # the staged hook's config block (PIO reads)
     lw      $t3, D_PAD($k0)             # the buttons from the last completed read
     # the virtual Controller Pak's service borrow (op 6; cfg spare bit 2): at the first
@@ -418,9 +500,50 @@ mt_padck:
     COMBO   D_HOLD_L, 2
     lw      $a0, CFG_COMBO_MENU($t1)
     COMBO   D_HOLD_M, 3
+    # the screenshot button: its press (down now, up at the last tick: a flag in the cart
+    # buffer, the vector page has no word to spare) arms the panel's counter the PC's way
+    # (bit 14: not cancelled by the release) with bit 11, op 7 at the trigger. Not while a
+    # borrow is in flight or a counter is armed or fired.
+    lw      $a0, CFG_COMBO_SHOT($t1)
+    beqz    $a0, mt_pcreq
+    lui     $a3, %hi(SHOT_FLAG)
+    and     $a2, $t3, $a0
+    bne     $a2, $a0, 4f                # not down
+    lw      $a2, %lo(SHOT_FLAG)($a3)
+    bnez    $a2, mt_pcreq               # down since the last tick: nothing new
+    lui     $a0, %hi(SHOT_FLAG)
+    addiu   $a0, $a0, %lo(SHOT_FLAG)
+    addiu   $a1, $zero, 1
+    CALL    LP_PIO_W                    # the flag up (clobbers t0-t2, k0, k1)
+    lui     $k0, 0x8000
+    lui     $t1, %hi(CFG_ADDR)
+    addiu   $t1, $t1, %lo(CFG_ADDR)
+    lw      $a2, D_GUARD($k0)
+    bnez    $a2, mt_pcreq
+    lw      $a2, D_HOLD_S($k0)
+    lw      $a1, D_HOLD_L($k0)
+    or      $a2, $a2, $a1
+    lw      $a1, D_HOLD_M($k0)
+    or      $a2, $a2, $a1
+    srl     $a2, $a2, 16
+    bnez    $a2, mt_pcreq
+    lui     $a1, 0x0001
+    ori     $a1, $a1, 0x4800            # armed, the PC's way, op 7 at the trigger
+    b       mt_pcreq
+    sw      $a1, D_HOLD_M($k0)
+4:  beqz    $a2, mt_pcreq               # up, and the flag down already
+    nop
+    lui     $a0, %hi(SHOT_FLAG)
+    addiu   $a0, $a0, %lo(SHOT_FLAG)
+    move    $a1, $zero
+    CALL    LP_PIO_W                    # the flag down
+    lui     $k0, 0x8000
+    lui     $t1, %hi(CFG_ADDR)
+    addiu   $t1, $t1, %lo(CFG_ADDR)
 mt_pcreq:
     # a request from the PC (hook_cfg.pc_req on the cart: op in the low byte, 1 save,
-    # 2 load, 3 panel, 5 screenshot): armed like a combo on that op's counter, with bit
+    # 2 load, 3 panel, 5 screenshot for the PC, 7 screenshot to the card): armed like a
+    # combo on that op's counter, with bit
     # 14 (the PC's, not cancelled by released buttons) and, for a screenshot, bit 15
     # (mt_trigger makes it op 5 on the panel's counter). Left alone while a borrow is
     # in flight or a counter is armed or fired; the hook clears the word and answers in
@@ -446,9 +569,13 @@ mt_pcreq:
     addiu   $a2, $zero, 3
     beq     $a0, $a2, 7f
     addiu   $a2, $zero, 5
+    beq     $a0, $a2, 8f
+    addiu   $a2, $zero, 7
     bne     $a0, $a2, mt_resume         # not an op of ours: ignored
     nop
-    ori     $a1, $a1, 0x8000            # a screenshot: the panel's counter, op 5 at the trigger
+    b       7f
+    ori     $a1, $a1, 0x0800            # (delay slot) the screenshot to the card: bit 11, op 7 at the trigger
+8:  ori     $a1, $a1, 0x8000            # a screenshot for the PC: the panel's counter, op 5 at the trigger
 7:  b       mt_resume
     sw      $a1, D_HOLD_M($k0)
 6:  b       mt_resume
@@ -523,7 +650,8 @@ mt_armed:
     nop
     addiu   $t1, $t1, 1
     sw      $t1, 0($t0)
-5:  andi    $t1, $t1, 0x0FFF            # the ticks armed (bit 13 the pak op, 14 and 15 the PC flags)
+5:  andi    $t1, $t1, 0x07FF            # the ticks armed (bit 11 the screenshot op, 12 the resume,
+                                        # 13 the pak op, 14 and 15 the PC flags: all outside the mask)
     sltiu   $t2, $t1, 120
     beqz    $t2, 4f                     # two seconds without a clean moment: dropped
     sltiu   $t2, $t1, 30
@@ -548,8 +676,10 @@ mt_armed:
 # mt_why: t2 = why this tick will not do for a borrow (0: it will). Uses t0/t1.
 mt_why:
     addiu   $t2, $zero, 1
-    lui     $t0, 0xA430
-    lw      $t0, 0x0008($t0)            # MI_INTR
+    lui     $t1, 0xA430
+    lw      $t0, 0x0008($t1)            # MI_INTR ...
+    lw      $t1, 0x000C($t1)            # ... of the interrupts the game has enabled (MI_MASK):
+    and     $t0, $t0, $t1               # one it masks and polls instead is no event to keep
     andi    $t0, $t0, 0x003F
     addiu   $t1, $zero, 0x0008
     beq     $t0, $t1, 1f                # the VI alone: a frame boundary
@@ -572,8 +702,8 @@ mt_why:
     addiu   $t2, $zero, 4
     lui     $t0, 0xA410
     lw      $t1, 0x000C($t0)            # DPC_STATUS
-    andi    $t1, $t1, 0x0160            # pipe, command, DMA busy
-    bnez    $t1, 9f                     # 4: the RDP is busy
+    andi    $t1, $t1, 0x0140            # command, DMA busy (pipe busy alone stays up until a
+    bnez    $t1, 9f                     # 4: the RDP is busy   full sync, which a libdragon game never sends)
     nop
     addiu   $t2, $zero, 5
     lui     $t0, 0xA480
@@ -673,7 +803,12 @@ mt_trig_res:
     beqz    $t1, 2f
     nop
     addiu   $v0, $zero, 4
-2:  lui     $t1, 0x0002
+2:  lw      $t1, 0($t0)
+    andi    $t1, $t1, 0x0800            # bit 11: the screenshot button (op 7: the frame to the card)
+    beqz    $t1, 6f
+    nop
+    addiu   $v0, $zero, 7
+6:  lui     $t1, 0x0002
     sw      $t1, 0($t0)                 # fired: counts on while held (never the threshold
 1:  lui     $t0, 0xA430                 # again, not armed); released, the COMBO zeroes it
     lw      $t0, 0x0008($t0)            # the RCP interrupt this moment is (MI_INTR, one bit),
@@ -840,46 +975,59 @@ mon_pak_hit:
 8:  jr      $ra
     lui     $at, 0xa480
 
-# mp_serve(a0 = channel 0's joybus block, kseg1): answers channel 0's accessory command
-# in place, as the resident hook's vpak_serve does: identify (0x00/0xFF, tx 1, rx 3) ->
-# a pak present; read 0x02 (tx 3, rx 33) -> 32 bytes of the image and their CRC; write
-# 0x03 (tx 35, rx 1) -> the image (ROM writes enabled around the PIO writes), the dirty
-# stamp, the CRC back. Blocks at 0x8000 and above echo the last byte written there (the
-# bank select) on a Rumble Pak; a Controller Pak reads zeros there, and so does this one
-# (the echo made libultra's osMotorInit take it for a Rumble Pak: Ocarina of Time then
-# probed it every few frames at a heavy cost). A write there is answered and dropped. libultra puts
-# channel 0's entry first (after any 0xFF padding) and an accessory block carries one
-# command, so nothing past that entry is looked at. The site fires at both SI
-# interrupts of a transaction: after the block went to the PIF (the game's copy still
-# holds its placeholders and the control byte 1 it set at offset 63) and after the
-# PIF's answer came back (the PIF clears that byte); only the second is served, the
-# first would be overwritten by the answer anyway (and cost the same). Clobbers at,
-# a0-a3, t0-t3, v0, k0, k1 and ra (kept in D_DIAG0, 0x1A8: a borrow's word, free while
-# the game runs). From the cart a read costs about half a millisecond, a write about
-# the same plus the ROM-write round trips.
+# mp_serve(a0 = the joybus block, kseg1): answers the accessory command of the channel
+# the virtual pak sits in, in place, as the resident hook's vpak_serve does: identify
+# (0x00/0xFF, tx 1, rx 3) -> a pak present; read 0x02 (tx 3, rx 33) -> 32 bytes of the
+# image and their CRC; write 0x03 (tx 35, rx 1) -> the image (ROM writes enabled around
+# the PIO writes), the dirty stamp, the CRC back. The channel, and whether the pak is in
+# at all, come from the control block's live word (PAK_CTL_LIVE: the menu writes it at
+# launch, the panel in a borrow): the block is walked to that channel (0x00 and 0xFD
+# count a channel, 0xFF is padding, 0xFE the end, an entry is 2 + tx + rx bytes; an
+# accessory block carries one command, so nothing past the entry is looked at). Removed,
+# the channel is left to whatever is in the real slot, but for one thing: after a change
+# the word carries the "pak changed" bit, the channel's next identify gets the status
+# bit the PIF gives after a swap (0x02) and the bit is cleared on the cart, so a game
+# that keeps its own idea of the slot looks again; in, the same one report rides the
+# identify that says a pak is present. Blocks at 0x8000 and above echo the last byte
+# written there (the bank select) on a Rumble Pak; a Controller Pak reads zeros there,
+# and so does this one (the echo made libultra's osMotorInit take it for a Rumble Pak:
+# Ocarina of Time then probed it every few frames at a heavy cost). A write there is
+# answered and dropped. The site fires at both SI interrupts of a transaction: after the
+# block went to the PIF (the game's copy still holds its placeholders and the control
+# byte 1 it set at offset 63) and after the PIF's answer came back (the PIF clears that
+# byte); only the second is served, the first would be overwritten by the answer anyway
+# (and cost the same). Clobbers at, a0-a3, t0-t3, v0, k0, k1 and ra (kept in D_DIAG0,
+# 0x1A8: a borrow's word, free while the game runs). From the cart a read costs about
+# half a millisecond, a write about the same plus the ROM-write round trips.
 mp_serve:
     lui     $k0, 0x8000
     sw      $ra, D_DIAG0($k0)
     lbu     $at, 63($a0)                # the PIF's control byte: still 1, the PIF has not run
     bnez    $at, mp_done
-    move    $t0, $zero
-1:  addu    $a1, $a0, $t0
+    lui     $at, %hi(PAK_CTL)
+    lw      $t3, %lo(PAK_CTL + PAK_CTL_LIVE)($at)   # t3: the live word (the channel, in, a change to report)
+    andi    $t1, $t3, 0x0003            # t1: channels before the pak's
+    move    $t0, $zero                  # t0: the offset into the block
+1:  sltiu   $a2, $t0, 63
+    beqz    $a2, mp_done                # padding to the end: nothing
+    addu    $a1, $a0, $t0
     lbu     $a1, 0($a1)                 # the entry's first byte
     addiu   $a2, $zero, 0xFF
     bne     $a1, $a2, 2f
-    sltiu   $a2, $t0, 63
-    beqz    $a2, mp_done                # padding to the end: nothing
+    addiu   $a2, $zero, 0xFE
+    b       1b                          # padding
+    addiu   $t0, $t0, 1
+2:  beq     $a1, $a2, mp_done           # end of the block
+    addiu   $a2, $zero, 0xFD
+    beq     $a1, $a2, 3f                # a channel reset: one byte, the channel counted
     nop
+    bnez    $a1, 4f                     # an entry
+    andi    $t2, $a1, 0x3F              # tx (the command byte counted)
+3:  beqz    $t1, mp_done                # the pak's channel skipped or reset: nothing to answer
+    addiu   $t1, $t1, -1
     b       1b
     addiu   $t0, $t0, 1
-2:  addiu   $a2, $zero, 0xFE
-    beq     $a1, $a2, mp_done           # end of the block
-    addiu   $a2, $zero, 0xFD
-    beq     $a1, $a2, mp_done           # channel 0 reset
-    nop
-    beqz    $a1, mp_done                # channel 0 skipped
-    andi    $t2, $a1, 0x3F              # tx (the command byte counted)
-    beqz    $t2, mp_done
+4:  beqz    $t2, mp_done                # not a block after all
     addu    $a1, $a0, $t0               # a1: the entry
     lbu     $a2, 1($a1)                 # rx byte (with the PIF's error bits)
     lbu     $v0, 2($a1)                 # the command
@@ -888,6 +1036,16 @@ mp_serve:
     addu    $a2, $a2, $a3
     sltiu   $a2, $a2, 63                # i + 2 + tx + rx <= 64
     beqz    $a2, mp_done                # not a block after all
+    nop
+    beqz    $t1, 5f                     # the pak's channel: this entry
+    addiu   $t1, $t1, -1
+    addu    $t0, $t0, $t2               # another channel's: past it
+    addu    $t0, $t0, $a3
+    b       1b
+    addiu   $t0, $t0, 2
+5:  lbu     $at, 1($a1)
+    andi    $at, $at, 0xC0              # the PIF's error bits: no controller answered there
+    bnez    $at, mp_done                # (a pak in an empty port changes nothing)
     addiu   $a2, $zero, 0x02
     beq     $v0, $a2, mp_read
     addiu   $a2, $zero, 0x03
@@ -897,22 +1055,47 @@ mp_serve:
     nop
     bnez    $v0, mp_done                # not a pak command (a controller read: the usual)
     nop
-mp_probe:                               # identify: a pak is present, not "pulled"
+mp_probe:                               # identify: a pak is present (in); "pak changed" once after a change
     addiu   $a2, $zero, 1
     bne     $t2, $a2, mp_done
     addiu   $a2, $zero, 3
     bne     $a3, $a2, mp_done
-    nop
-    sb      $a2, 1($a1)                 # no receive error
+    andi    $at, $t3, 0x30              # in, or a change to report
+    beqz    $at, mp_done                # neither: the real slot's answer stands
+    andi    $at, $t3, 0x10
+    beqz    $at, 6f                     # removed: only the report
     lbu     $a2, 5($a1)
-    ori     $a2, $a2, 0x01
-    andi    $a2, $a2, 0xFD
-    sb      $a2, 5($a1)
+    addiu   $at, $zero, 3
+    sb      $at, 1($a1)                 # no receive error
+    ori     $a2, $a2, 0x01              # a pak present ...
+    andi    $a2, $a2, 0xFD              # ... not "pulled" ...
+6:  andi    $at, $t3, 0x20
+    beqz    $at, 7f
+    nop
+    ori     $a2, $a2, 0x02              # ... but for the one report after a change
+7:  sb      $a2, 5($a1)
     DEVTRACE 1                          # (the trace first: the counter's helper clobbers a1, the entry)
     DEVCOUNT 0xBFFE1F40
+    andi    $at, $t3, 0x20
+    beqz    $at, mp_done
+    nop
+    # the report made: the bit off in the control block (the register block unlocked,
+    # ROM writes on around the PIO write, as mp_write does; t3 survives the helpers)
+    jal     mp_unlock
+    nop
+    jal     mon_cfg_rw
+    addiu   $a2, $zero, 1
+    lui     $a0, %hi(PAK_CTL + PAK_CTL_LIVE)
+    addiu   $a0, $a0, %lo(PAK_CTL + PAK_CTL_LIVE)
+    andi    $a1, $t3, 0xFFDF
+    CALL    LP_PIO_W
+    jal     mon_cfg_rw
+    move    $a2, $zero
     b       mp_done
     nop
 mp_read:                                # 32 bytes of the image and their CRC
+    andi    $at, $t3, 0x10
+    beqz    $at, mp_done                # removed: the real slot's answer stands
     addiu   $a2, $zero, 3
     bne     $t2, $a2, mp_done
     addiu   $a2, $zero, 33
@@ -987,6 +1170,8 @@ mp_read:                                # 32 bytes of the image and their CRC
     b       mp_done
     nop
 mp_write:                               # 32 bytes into the image, the CRC back
+    andi    $at, $t3, 0x10
+    beqz    $at, mp_done                # removed: the real slot's answer stands
     addiu   $a2, $zero, 35
     bne     $t2, $a2, mp_done
     addiu   $a2, $zero, 1
@@ -1018,9 +1203,8 @@ mp_write:                               # 32 bytes into the image, the CRC back
     sll     $v0, $v0, 5
     # the register block unlocked, ROM writes on (the image and the control block are
     # ROM space to the cart), the words in, ROM writes off again
-    PIOW    0xBFFF0010, 0x00000000
-    PIOW    0xBFFF0010, 0x5F554E4C
-    PIOW    0xBFFF0010, 0x4F434B5F
+    jal     mp_unlock
+    nop
     jal     mon_cfg_rw
     addiu   $a2, $zero, 1
     lui     $a3, %hi(VPAK_KSEG1)
@@ -1064,6 +1248,17 @@ mp_done:
     lui     $k0, 0x8000
     lw      $ra, D_DIAG0($k0)
     jr      $ra
+    nop
+
+# the cart's register block unlocked (the key in three writes) before a cart write from
+# this section: ra kept in a3, which every caller has free (clobbers a0, a1, t2 and what
+# LP_PIO_W does: t0-t2, k0, k1)
+mp_unlock:
+    move    $a3, $ra
+    PIOW    0xBFFF0010, 0x00000000
+    PIOW    0xBFFF0010, 0x5F554E4C
+    PIOW    0xBFFF0010, 0x4F434B5F
+    jr      $a3
     nop
 .balign 16
 mp_crc_tab:

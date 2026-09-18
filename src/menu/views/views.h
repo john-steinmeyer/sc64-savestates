@@ -355,6 +355,29 @@ void view_extract_file_init(menu_t *menu);
 void view_extract_file_display(menu_t *menu, surface_t *display);
 
 /**
+ * @brief SC64SS: initialize the save state hotkeys view.
+ *
+ * @param menu Pointer to the menu structure.
+ */
+void view_hotkeys_init(menu_t *menu);
+
+/**
+ * @brief SC64SS: display the save state hotkeys view.
+ *
+ * @param menu Pointer to the menu structure.
+ * @param display Pointer to the display surface.
+ */
+void view_hotkeys_display(menu_t *menu, surface_t *display);
+
+/**
+ * @brief SC64SS: screenshots a game left in the pending folder, moved to the game's own.
+ *
+ * @param storage_prefix The storage prefix ("sd:").
+ */
+void sc64ss_shots_finish(const char *storage_prefix);
+void ui_components_file_list_set_width(int width);   // SC64SS: 0 = the full width (a preview beside the list otherwise)
+
+/**
  * @brief Show an error message in the menu.
  *
  * @param menu Pointer to the menu structure.

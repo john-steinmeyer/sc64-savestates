@@ -35,6 +35,11 @@ static settings_t init = {
     .show_browser_rom_tags = true,
     .wrap_file_list_scrolling = false,
     .rumble_enabled = false,
+    /* SC64SS: the save state hotkeys */
+    .ss_key_save = "L+R+Up",
+    .ss_key_load = "L+R+Down",
+    .ss_key_panel = "R+Z+Start",
+    .ss_key_step = "L",
 };
 
 
@@ -83,6 +88,16 @@ void settings_load (settings_t *settings) {
     settings->wrap_file_list_scrolling = ini_get_bool(ini, "menu", "wrap_file_list_scrolling", init.wrap_file_list_scrolling);
     settings->rumble_enabled = ini_get_bool(ini, "menu_beta_flag", "rumble_enabled", init.rumble_enabled);
 
+    /* SC64SS: the save state hotkeys */
+    free(settings->ss_key_save);
+    settings->ss_key_save = strdup(ini_get_string(ini, "savestates", "hotkey_save", init.ss_key_save));
+    free(settings->ss_key_load);
+    settings->ss_key_load = strdup(ini_get_string(ini, "savestates", "hotkey_load", init.ss_key_load));
+    free(settings->ss_key_panel);
+    settings->ss_key_panel = strdup(ini_get_string(ini, "savestates", "hotkey_panel", init.ss_key_panel));
+    free(settings->ss_key_step);
+    settings->ss_key_step = strdup(ini_get_string(ini, "savestates", "hotkey_step", init.ss_key_step));
+
     ini_free(ini);
 }
 
@@ -116,6 +131,12 @@ void settings_save (settings_t *settings) {
     // ini_set_bool(ini, "menu", "show_browser_rom_tags", settings->show_browser_rom_tags);
     ini_set_bool(ini, "menu", "wrap_file_list_scrolling", settings->wrap_file_list_scrolling);
     // ini_set_bool(ini, "menu_beta_flag", "rumble_enabled", settings->rumble_enabled);
+
+    /* SC64SS: the save state hotkeys */
+    ini_set_string(ini, "savestates", "hotkey_save", settings->ss_key_save);
+    ini_set_string(ini, "savestates", "hotkey_load", settings->ss_key_load);
+    ini_set_string(ini, "savestates", "hotkey_panel", settings->ss_key_panel);
+    ini_set_string(ini, "savestates", "hotkey_step", settings->ss_key_step);
 
     if (!ini_save(ini, settings_path)) {
         debugf("[SETTINGS] Failed to save settings to %s\n", settings_path);

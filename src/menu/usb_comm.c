@@ -18,6 +18,12 @@
 #include "usb_comm.h"
 #include "utils/fs.h"
 #include "utils/utils.h"
+#include "../boot/hook_blob.h"
+#if SC64SS_HOOK_DEV
+#include <fatfs/ff.h>
+#include <libdragon.h>
+#include <errno.h>
+#endif
 
 #define MAX_FILE_SIZE   MiB(4)
 
@@ -132,9 +138,24 @@ static void command_receive_file (menu_t *menu) {
         return usb_comm_send_error("Invalid file length argument\n");
     }
 
+#if SC64SS_HOOK_DEV
+    // SC64SS: a path with a leading '+' appends to the file, so a development tool can send
+    // a file bigger than one payload in pieces (a large homebrew ROM); release builds keep
+    // the stock command as it is.
+    char *name = buffer;
+    const char *mode = "wb";
+    if (name[0] == '+') {
+        name++;
+        mode = "ab";
+    }
+    path_t *path = path_init(menu->storage_prefix, name);
+
+    if ((f = fopen(path_get(path), mode)) == NULL) {
+#else
     path_t *path = path_init(menu->storage_prefix, buffer);
 
     if ((f = fopen(path_get(path), "wb")) == NULL) {
+#endif
         path_free(path);
         return usb_comm_send_error("Couldn't create file\n");
     }
@@ -227,8 +248,93 @@ static void command_load_rom (menu_t *menu) {
     usb_write(DATATYPE_TEXT, "loading\n", 8);
 }
 
+#if SC64SS_HOOK_DEV
+// SC64SS development build only: the card's free space, a directory listing and a file
+// removal over USB, for the PC-driven test loop. "disk-free" answers "free <clusters>
+// of <clusters> x <bytes>"; "list-dir <path>" answers one "d <name>" or "f <size> <name>"
+// line per entry and "list end"; "remove-file <path>" answers "removed <path>" or
+// "remove failed <errno> <path>".
+static void command_disk_free (menu_t *menu) {
+    (void) menu;
+    FATFS *fs = NULL;
+    DWORD nclst = 0;
+    char line[96];
+    FRESULT r = f_getfree("", &nclst, &fs);
+    if ((r != FR_OK) || (fs == NULL)) {
+        snprintf(line, sizeof(line), "disk-free failed %d\n", (int) r);
+    } else {
+        snprintf(line, sizeof(line), "free %lu of %lu x %lu\n", (unsigned long) nclst, (unsigned long) (fs->n_fatent - 2), (unsigned long) fs->csize * 512UL);
+    }
+    usb_write(DATATYPE_TEXT, line, strlen(line));
+}
+
+// "disk-scan": the free cluster count taken from the allocation table itself, not from the
+// card's FSInfo hint (which FatFs trusts once it reads as valid, and which a card can carry
+// wrong: a half-empty card that said 0 free refused every new file). The count goes back
+// to the FSInfo sector with the next sync (the directory made and removed here).
+static void command_disk_scan (menu_t *menu) {
+    (void) menu;
+    FATFS *fs = NULL;
+    DWORD nclst = 0;
+    char line[96];
+    FRESULT r = f_getfree("", &nclst, &fs);
+    if ((r == FR_OK) && (fs != NULL)) {
+        fs->free_clst = 0xFFFFFFFF;
+        r = f_getfree("", &nclst, &fs);
+    }
+    if (r == FR_OK) {
+        f_mkdir("/zz_scan");
+        f_unlink("/zz_scan");
+    }
+    snprintf(line, sizeof(line), "scan %d free %lu\n", (int) r, (unsigned long) nclst);
+    usb_write(DATATYPE_TEXT, line, strlen(line));
+}
+
+static void command_list_dir (menu_t *menu) {
+    char buffer[256], line[300];
+    dir_t info;
+    if (usb_comm_read_string(buffer, sizeof(buffer), '\0')) {
+        return usb_comm_send_error("Invalid path argument\n");
+    }
+    path_t *path = path_init(menu->storage_prefix, buffer);
+    int result = dir_findfirst(path_get(path), &info);
+    while (result == 0) {
+        if (info.d_type == DT_DIR) {
+            snprintf(line, sizeof(line), "d %s\n", info.d_name);
+        } else {
+            snprintf(line, sizeof(line), "f %lld %s\n", (long long) info.d_size, info.d_name);
+        }
+        usb_write(DATATYPE_TEXT, line, strlen(line));
+        result = dir_findnext(path_get(path), &info);
+    }
+    path_free(path);
+    usb_write(DATATYPE_TEXT, "list end\n", 9);
+}
+
+static void command_remove_file (menu_t *menu) {
+    char buffer[256], line[300];
+    if (usb_comm_read_string(buffer, sizeof(buffer), '\0')) {
+        return usb_comm_send_error("Invalid path argument\n");
+    }
+    path_t *path = path_init(menu->storage_prefix, buffer);
+    if (remove(path_get(path)) == 0) {
+        snprintf(line, sizeof(line), "removed %s\n", buffer);
+    } else {
+        snprintf(line, sizeof(line), "remove failed %d %s\n", errno, buffer);
+    }
+    path_free(path);
+    usb_write(DATATYPE_TEXT, line, strlen(line));
+}
+#endif
+
 static usb_comm_command_t commands[] = {
     { .id = "reboot", .op = command_reboot },
+#if SC64SS_HOOK_DEV
+    { .id = "disk-free", .op = command_disk_free },
+    { .id = "disk-scan", .op = command_disk_scan },
+    { .id = "list-dir", .op = command_list_dir },
+    { .id = "remove-file", .op = command_remove_file },
+#endif
     { .id = "send-file", .op = command_receive_file }, // Note that this is a crossover with the `id` related to the PC commands.
     { .id = "ping", .op = command_ping },
     { .id = "load-rom", .op = command_load_rom },

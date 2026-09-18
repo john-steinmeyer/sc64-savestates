@@ -15,6 +15,7 @@
 #include "views.h"
 #include "../../boot/hook_blob.h"
 #include "../../flashcart/flashcart_utils.h"
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -93,13 +94,17 @@ static bool sc64ss_state_file_runs (char *fp, uint32_t *table, uint32_t *total, 
 // SC64SS: the state slots live in cart SDRAM above the ROM, SC64SS_STATE_SLOT_LEN apart
 // (1 MiB aligned after the ROM), below the hook's staging copy; hook_blob.h carries the
 // layout the hook was built with. Returns the slot count (0: the ROM leaves no room).
-static uint32_t sc64ss_slot_table (int64_t rom_size, uint32_t *slots, uint32_t stride) {
+// A libdragon ROM keeps its slots below the last 8 MiB of the cart's memory: libdragon's USB
+// logging puts a game's prints there (usb.c, DEBUG_ADDRESS), inside the slot that reaches it.
+#define SC64SS_LIBDRAGON_SLOT_TOP 0x13800000UL
+static uint32_t sc64ss_slot_table (int64_t rom_size, uint32_t *slots, uint32_t stride, bool libdragon) {
+    uint64_t top = libdragon ? SC64SS_LIBDRAGON_SLOT_TOP : SC64SS_FRAME_STASH_PI;
     uint32_t n = 0;
     if (rom_size <= 0) {
         return 0;
     }
     uint64_t base = 0x10000000ULL + (((uint64_t) rom_size + 0xFFFFFULL) & ~0xFFFFFULL);
-    for (uint64_t a = base; ((a + stride) <= SC64SS_FRAME_STASH_PI) && (n < SC64SS_SLOTS_MAX); a += stride) {   // below the frame stash (hook.c), which sits below the staging
+    for (uint64_t a = base; ((a + stride) <= top) && (n < SC64SS_SLOTS_MAX); a += stride) {   // below the frame stash (hook.c), which sits below the staging
         slots[n++] = (uint32_t) a;
     }
     return n;
@@ -173,6 +178,322 @@ static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n,
         path_free(file);
     }
     path_free(dir);
+}
+
+// SC64SS: screenshots. A game appends each one as a PNG to sd:/screenshots/pending.bin, a
+// file the menu keeps allocated (the routine in the game can write into a file but not
+// create one): its run table on the cart at SC64SS_SHOT_TABLE_PI and its 4 KiB header
+// block at SC64SS_SHOT_HDR_PI (magic, the ROM's check code, the count, the capacity, the
+// fill point, an entry {first sector, length} per shot, the launching ROM's file name at
+// SC64SS_SHOTS_OWNER_OFF), which the routine keeps up to date and copies to the file's
+// first sectors after every shot. When the menu starts again, sc64ss_shots_finish copies
+// the shots out to sd:/screenshots/<the ROM's file name>/, named after the time stamp the
+// routine put in them, and empties the file.
+#define SC64SS_SHOTS_DIR      "/screenshots"
+#define SC64SS_SHOTS_FILE     "pending.bin"
+#define SC64SS_SHOTS_OLD_DIR  "pending"       // (an earlier layout: a few files; cleared away)
+#ifndef SC64SS_SHOT_HDR_PI                    // (a hook blob from before screenshots: no file)
+#define SC64SS_SHOT_TABLE_PI    (0x13F80000UL)
+#define SC64SS_SHOT_HDR_PI      (0x13F81000UL)
+#define SC64SS_SHOT_HDR_SECTORS (8UL)
+#define SC64SS_SHOT_ENTRIES_MAX (508UL)
+#define SC64SS_SD_MAGIC_SHOT    (0x53484354UL)
+#endif
+#define SC64SS_SHOTS_SIZE_MAX  (64UL * 1024 * 1024)
+#define SC64SS_SHOTS_SIZE_MIN  (4UL * 1024 * 1024)
+#define SC64SS_SHOTS_OWNER_OFF (2048)
+
+// a file's cluster runs as a run table for the hook (SDR1, n, total, n x {sector, file
+// sector, count}), without a list of every sector: a large file fits only when it lies in
+// SC64SS_SD_RUNS_MAX pieces or fewer. false when it is missing or more fragmented than that.
+static bool sc64ss_file_runs (char *fp, uint32_t *table, uint32_t *total, uint32_t max_sectors) {
+    FIL fil;
+    uint32_t n = 0;
+    bool ok = true;
+    *total = 0;
+    if (f_open(&fil, strip_fs_prefix(fp), FA_READ) != FR_OK) {
+        return false;
+    }
+    fatfs_fix_file_size(&fil);
+    FATFS *fs = fil.obj.fs;
+    uint32_t csize = fs->csize;
+    uint32_t sectors = (uint32_t) (f_size(&fil) / 512);
+    if (sectors > max_sectors) {
+        sectors = max_sectors;
+    }
+    for (uint32_t fsec = 0; fsec < sectors; fsec += csize) {
+        if (f_lseek(&fil, ((FSIZE_t) fsec * 512) + 256) != FR_OK) {
+            ok = false;
+            break;
+        }
+        uint32_t cluster = fil.clust;
+        if ((cluster < 2) || (cluster >= fs->n_fatent)) {
+            ok = false;
+            break;
+        }
+        uint32_t sector = (uint32_t) (fs->database + ((LBA_t) csize * (cluster - 2)));
+        uint32_t count = (csize < (sectors - fsec)) ? csize : (sectors - fsec);
+        if ((n > 0) && (sector == table[3 + 3 * (n - 1)] + table[5 + 3 * (n - 1)])) {
+            table[5 + 3 * (n - 1)] += count;
+        } else {
+            if (n >= SC64SS_SD_RUNS_MAX) {
+                ok = false;
+                break;
+            }
+            table[3 + 3 * n] = sector;
+            table[4 + 3 * n] = fsec;
+            table[5 + 3 * n] = count;
+            n++;
+        }
+        *total += count;
+    }
+    f_close(&fil);
+    if (!ok || (n == 0)) {
+        return false;
+    }
+    table[0] = SC64SS_SD_RUNS_MAGIC;
+    table[1] = n;
+    table[2] = *total;
+    return true;
+}
+
+// the header block as the menu writes it at launch: no shots, the fill point after the block
+static void sc64ss_shot_header_init (uint32_t *hdr, uint32_t crc1, uint32_t crc2, uint32_t sectors, const char *owner) {
+    memset(hdr, 0, 4096);
+    hdr[0] = SC64SS_SD_MAGIC_SHOT;
+    hdr[1] = crc1;
+    hdr[2] = crc2;
+    hdr[3] = 0;
+    hdr[4] = sectors;
+    hdr[5] = SC64SS_SHOT_HDR_SECTORS;
+    snprintf((char *) hdr + SC64SS_SHOTS_OWNER_OFF, 256, "%s", owner);
+}
+
+// the screenshot file ready for the routine (allocated when missing, its run table and
+// header block on the cart, hook_cfg's fill point and count at their starts); returns
+// its size in sectors, 0 when there is none
+static uint32_t __attribute__((unused)) sc64ss_prepare_shot_file (menu_t *menu, uint32_t *cfg) {
+    static uint32_t table[4 + 3 * SC64SS_SD_RUNS_MAX] __attribute__((aligned(16)));
+    static uint32_t hdr[1024] __attribute__((aligned(16)));
+    uint64_t check_code = (uint64_t) menu->load.rom_info.check_code;
+    uint32_t crc1 = (uint32_t) (check_code >> 32);
+    uint32_t crc2 = (uint32_t) (check_code & 0xFFFFFFFFULL);
+    uint32_t sectors = 0, total = 0;
+    char owner[256];
+
+    sc64ss_shots_finish(menu->storage_prefix);   // (nothing of the last game's is left inside)
+
+    path_t *dir = path_init(menu->storage_prefix, SC64SS_SHOTS_DIR);
+    if (!directory_exists(path_get(dir)) && directory_create(path_get(dir))) {
+        debugf("SC64SS: could not create %s (%d)\n", path_get(dir), errno);
+    }
+    path_t *old = path_clone(dir);                // the earlier layout's files, if any
+    path_push(old, SC64SS_SHOTS_OLD_DIR);
+    if (directory_exists(path_get(old))) {
+        for (uint32_t i = 0; i < 8; i++) {
+            char name[24];
+            snprintf(name, sizeof(name), "shot-%lu.png", (unsigned long) i);
+            path_t *f = path_clone(old);
+            path_push(f, name);
+            remove(path_get(f));
+            path_free(f);
+        }
+        path_t *o = path_clone(old);
+        path_push(o, "owner.txt");
+        remove(path_get(o));
+        path_free(o);
+        remove(path_get(old));
+    }
+    path_free(old);
+
+    path_t *stem = path_clone(menu->load.rom_path);
+    path_ext_remove(stem);
+    snprintf(owner, sizeof(owner), "%s", path_last_get(stem));
+    path_free(stem);
+
+    path_t *file = path_clone(dir);
+    path_push(file, SC64SS_SHOTS_FILE);
+    char *fp = path_get(file);
+    int64_t have = file_exists(fp) ? file_get_size(fp) : 0;
+    if (have >= (int64_t) SC64SS_SHOTS_SIZE_MIN) {
+        memset(table, 0, sizeof(table));
+        if (sc64ss_file_runs(fp, table, &total, (uint32_t) (have / 512))) {
+            sectors = total;
+        } else {
+            remove(fp);
+        }
+    } else if (have > 0) {
+        remove(fp);
+    }
+    for (uint32_t size = SC64SS_SHOTS_SIZE_MAX; !sectors && (size >= SC64SS_SHOTS_SIZE_MIN); size /= 2) {
+        if (file_allocate(fp, size)) {            // no room for one this big
+            remove(fp);
+            continue;
+        }
+        memset(table, 0, sizeof(table));
+        if (sc64ss_file_runs(fp, table, &total, size / 512)) {
+            sectors = total;
+        } else {
+            remove(fp);                           // in too many pieces for the run table: smaller
+        }
+    }
+    if (sectors) {
+        sc64ss_shot_header_init(hdr, crc1, crc2, sectors, owner);
+        FILE *f = fopen(fp, "r+b");
+        if (f) {
+            if (fwrite(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+                sectors = 0;
+            }
+            fclose(f);
+        } else {
+            sectors = 0;
+        }
+    }
+    if (sectors) {
+        data_cache_hit_writeback(table, sizeof(table));
+        dma_write(table, SC64SS_SHOT_TABLE_PI, sizeof(table));
+        data_cache_hit_writeback(hdr, sizeof(hdr));
+        dma_write(hdr, SC64SS_SHOT_HDR_PI, sizeof(hdr));
+        cfg[43] = SC64SS_SHOT_HDR_SECTORS;        // hook_cfg.shot_fill
+        cfg[44] = 0;                              // hook_cfg.shot_count
+        debugf("SC64SS: screenshot file %s, %lu sectors\n", fp, (unsigned long) sectors);
+    } else {
+        debugf("SC64SS: no screenshot file (%d)\n", errno);
+    }
+    path_free(file);
+    path_free(dir);
+    return sectors;
+}
+
+// the last game's screenshots out of the pending file, into the game's folder
+void sc64ss_shots_finish (const char *storage_prefix) {
+    static uint32_t hdr[1024] __attribute__((aligned(16)));
+    char owner[80];
+    path_t *file = path_init((char *) storage_prefix, SC64SS_SHOTS_DIR);
+    path_push(file, SC64SS_SHOTS_FILE);
+    char *fp = path_get(file);
+    FILE *f = fopen(fp, "r+b");
+    if (!f) {
+        path_free(file);
+        return;
+    }
+    setbuf(f, NULL);
+    if ((fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) || (hdr[0] != SC64SS_SD_MAGIC_SHOT) ||
+        (hdr[3] == 0) || (hdr[3] > SC64SS_SHOT_ENTRIES_MAX)) {
+        fclose(f);
+        path_free(file);
+        return;
+    }
+    uint32_t count = hdr[3];
+    int64_t size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : 0;
+    snprintf(owner, sizeof(owner), "%.79s", (const char *) hdr + SC64SS_SHOTS_OWNER_OFF);
+    for (char *p = owner; *p; p++) {
+        if (strchr("\\/:*?\"<>|\r\n", *p)) {
+            *p = '_';
+        }
+    }
+    if (!owner[0]) {
+        snprintf(owner, sizeof(owner), "unknown");
+    }
+    uint8_t *buf = malloc(32768);
+    path_t *gdir = path_init((char *) storage_prefix, SC64SS_SHOTS_DIR);
+    path_push(gdir, owner);
+    if (!directory_exists(path_get(gdir))) {
+        directory_create(path_get(gdir));
+    }
+    uint32_t seq = 0;
+    for (uint32_t i = 0; (buf != NULL) && (i < count); i++) {
+        uint32_t sector = hdr[8 + 2 * i], len = hdr[9 + 2 * i];
+        char stamp[32] = "", fname[160];
+        uint8_t ch[8];
+        uint32_t off = 8;
+        bool ok = false;
+        if (!len || (sector < SC64SS_SHOT_HDR_SECTORS) || (((int64_t) sector * 512 + len) > size)) {
+            continue;
+        }
+        if ((fseek(f, (long) sector * 512, SEEK_SET) != 0) || (fread(ch, 1, 8, f) != 8) ||
+            (memcmp(ch, "\x89PNG\r\n\x1a\n", 8) != 0)) {
+            continue;
+        }
+        for (int k = 0; k < 64; k++) {    // the chunks up to IEND: the time stamp
+            uint32_t clen;
+            if (fread(ch, 1, 8, f) != 8) {
+                break;
+            }
+            clen = ((uint32_t) ch[0] << 24) | ((uint32_t) ch[1] << 16) | ((uint32_t) ch[2] << 8) | ch[3];
+            if ((off + 12 + clen) > len) {
+                break;
+            }
+            off += 12 + clen;
+            if ((memcmp(ch + 4, "tEXt", 4) == 0) && (clen < 64)) {
+                char t[64];
+                if (fread(t, 1, clen, f) != clen) {
+                    break;
+                }
+                t[clen] = 0;
+                if ((clen > 14) && (memcmp(t, "Creation Time", 14) == 0)) {
+                    snprintf(stamp, sizeof(stamp), "%s", t + 14);
+                }
+                fseek(f, 4, SEEK_CUR);
+            } else if (memcmp(ch + 4, "IEND", 4) == 0) {
+                ok = true;
+                break;
+            } else {
+                fseek(f, (long) (clen + 4), SEEK_CUR);
+            }
+        }
+        if (!ok) {
+            continue;
+        }
+        if (stamp[0]) {
+            for (char *p = stamp; *p; p++) {
+                if (*p == ':') {
+                    *p = '-';
+                }
+            }
+            snprintf(fname, sizeof(fname), "%s %s.png", owner, stamp);
+        } else {
+            snprintf(fname, sizeof(fname), "%s %04lu.png", owner, (unsigned long) ++seq);
+        }
+        path_t *dst = path_clone(gdir);
+        path_push(dst, fname);
+        for (uint32_t k = 2; file_exists(path_get(dst)) && (k < 100); k++) {   // the same second twice: a suffix
+            path_pop(dst);
+            if (stamp[0]) {
+                snprintf(fname, sizeof(fname), "%s %s (%lu).png", owner, stamp, (unsigned long) k);
+            } else {
+                snprintf(fname, sizeof(fname), "%s %04lu (%lu).png", owner, (unsigned long) seq, (unsigned long) k);
+            }
+            path_push(dst, fname);
+        }
+        FILE *o = fopen(path_get(dst), "wb");
+        if (o) {
+            uint32_t left = len;
+            if (fseek(f, (long) sector * 512, SEEK_SET) != 0) {
+                left = 0;
+            }
+            while (left) {
+                uint32_t n = (left > 32768) ? 32768 : left;
+                if ((fread(buf, 1, n, f) != n) || (fwrite(buf, 1, n, o) != n)) {
+                    break;
+                }
+                left -= n;
+            }
+            fclose(o);
+            debugf("SC64SS: screenshot %lu -> %s (%s)\n", (unsigned long) i, path_get(dst), left ? "short" : "ok");
+        }
+        path_free(dst);
+    }
+    free(buf);
+    path_free(gdir);
+    hdr[3] = 0;                                   // the file empty again
+    hdr[5] = SC64SS_SHOT_HDR_SECTORS;
+    memset(&hdr[8], 0, (SC64SS_SHOTS_OWNER_OFF / 4 - 8) * 4);
+    if (fseek(f, 0, SEEK_SET) == 0) {
+        fwrite(hdr, 1, sizeof(hdr), f);
+    }
+    fclose(f);
+    path_free(file);
 }
 
 // SC64SS: a freshly formatted Controller Pak image (one bank), laid out the way
@@ -272,6 +593,9 @@ static bool sc64ss_prepare_pak (menu_t *menu) {
             static uint32_t ctl[16] __attribute__((aligned(16)));
             memset(ctl, 0, sizeof(ctl));
             ctl[0] = 0x56504B31UL;
+            // +0x38 the live word (hook.c PAK_LIVE_*): the port's channel, inserted; the
+            // panel changes it in the game
+            ctl[14] = (uint32_t) ((menu->load.rom_info.settings.vpak_port - 1) & 3) | 0x10;
             data_cache_hit_writeback(ctl, sizeof(ctl));
             dma_write(ctl, SC64SS_VPAK_CTL_PI, sizeof(ctl));
             debugf("SC64SS: virtual pak loaded from %s\n", fp);
@@ -605,7 +929,7 @@ static void set_savestate_option (menu_t *menu, void *arg) {
     }
     if (enabled) {
         uint32_t slots[SC64SS_SLOTS_MAX];
-        if (sc64ss_slot_table(file_get_size(path_get(menu->load.rom_path)), slots, SC64SS_STATE_SLOT_LEN_B) == 0) {
+        if (sc64ss_slot_table(file_get_size(path_get(menu->load.rom_path)), slots, SC64SS_STATE_SLOT_LEN_B, menu->load.rom_info.libdragon) == 0) {
             rom_config_setting_set_savestates(menu->load.rom_path, &menu->load.rom_info, false);
             menu_show_error(menu, "No room for save states:\nthe ROM fills the cartridge memory");
             menu->browser.reload = true;
@@ -617,9 +941,13 @@ static void set_savestate_option (menu_t *menu, void *arg) {
 }
 
 // SC64SS: the virtual Controller Pak rides on the same engine as save states (in
-// borrowed mode the monitor serves it from the cart).
+// borrowed mode the monitor serves it from the cart). The choice is the port it sits in
+// at launch (1..4: a controller must be in that port when the game boots, since a game
+// only talks to the ports it found then) or off; the panel's Game page can take it out
+// and put it back in any port while the game runs.
 static void set_vpak_option (menu_t *menu, void *arg) {
-    bool enabled = (bool)arg;
+    int port = (int) (uintptr_t) arg;
+    bool enabled = (port != 0);
     if (enabled && !is_memory_expanded()) {
         rom_config_setting_set_vpak(menu->load.rom_path, &menu->load.rom_info, false);
         menu_show_error(menu, "The virtual Controller Pak requires an Expansion Pak");
@@ -627,7 +955,20 @@ static void set_vpak_option (menu_t *menu, void *arg) {
         return;
     }
     rom_config_setting_set_vpak(menu->load.rom_path, &menu->load.rom_info, enabled);
+    if (enabled) {
+        rom_config_setting_set_vpak_port(menu->load.rom_path, &menu->load.rom_info, port);
+    }
     menu->browser.reload = true;
+}
+
+// SC64SS: the virtual pak in the ROM's info text: "Off", or the port it starts in
+static const char *format_vpak_info (rom_info_t *rom_info) {
+    static char text[12];
+    if (!rom_info->settings.vpak_enabled) {
+        return "Off";
+    }
+    snprintf(text, sizeof(text), "port %d", rom_info->settings.vpak_port);
+    return text;
 }
 
 // SC64SS: Slow motion (the panel's Game page: 1/2, 1/4, 1/8, frame step, the sound
@@ -637,7 +978,24 @@ static void set_vpak_option (menu_t *menu, void *arg) {
 // Slots and files have one layout for both, so switching loses no state; a state saved
 // with it on holds the RAM below the routine (7.75 MiB) and loads either way. Games
 // that use all of the Expansion Pak (Donkey Kong 64, Perfect Dark, Indiana Jones, Rush
-// 2049) do not boot with it on: the docs say so, and switching it back off is the cure.
+// 2049) never boot with it on, since the routine's home at the top of RAM is theirs:
+// the option is refused for them, and a launch keeps the borrowed engine for them
+// whatever an old ini says.
+static bool sc64ss_full_ram_title (const rom_info_t *rom_info) {
+    static const char codes[][3] = {
+        { 'N', 'P', 'D' },      // Perfect Dark
+        { 'N', 'D', 'O' },      // Donkey Kong 64
+        { 'N', 'I', 'J' },      // Indiana Jones and the Infernal Machine
+        { 'N', 'R', 'U' },      // San Francisco Rush 2049
+    };
+    for (uint32_t k = 0; k < sizeof(codes) / sizeof(codes[0]); k++) {
+        if (memcmp(rom_info->game_code, codes[k], 3) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void set_slowmotion_option (menu_t *menu, void *arg) {
     bool enabled = (bool)arg;
     if (enabled && !is_memory_expanded()) {
@@ -646,8 +1004,34 @@ static void set_slowmotion_option (menu_t *menu, void *arg) {
         menu->browser.reload = true;
         return;
     }
+    if (enabled && sc64ss_full_ram_title(&menu->load.rom_info)) {
+        rom_config_setting_set_hook_borrowed(menu->load.rom_path, &menu->load.rom_info, true);
+        menu_show_error(menu, "Slow motion is not available for this game: it uses all of the Expansion Pak, where the routine would sit");
+        menu->browser.reload = true;
+        return;
+    }
     rom_config_setting_set_hook_borrowed(menu->load.rom_path, &menu->load.rom_info, !enabled);
     menu->browser.reload = true;
+}
+
+// SC64SS: this ROM's own hotkeys and its screenshot button
+static void open_hotkeys (menu_t *menu, void *arg) {
+    (void)arg;
+    menu->hotkeys_for_rom = true;
+    menu->next_mode = MENU_MODE_HOTKEYS;
+}
+
+// SC64SS: the buttons a launch hands the routine: the ROM's own setting when it reads as
+// buttons, else the menu's, else the built-in one
+static uint16_t sc64ss_key_effective (const char *rom_text, const char *menu_text, const char *builtin) {
+    uint16_t m = sc64ss_keys_parse(rom_text);
+    if (!m) {
+        m = sc64ss_keys_parse(menu_text);
+    }
+    if (!m) {
+        m = sc64ss_keys_parse(builtin);
+    }
+    return m;
 }
 
 static void open_datel_code_editor (menu_t *menu, void *arg) {
@@ -791,8 +1175,11 @@ static component_context_menu_t set_savestate_options_menu = {
 static component_context_menu_t set_vpak_options_menu = {
     .get_default_selection = get_rom_vpak_current_selection,
     .list = {
-    { .text = "Enabled", .action = set_vpak_option, .arg = (void *) (true)},
-    { .text = "Disabled", .action = set_vpak_option, .arg = (void *) (false)},
+    { .text = "Port 1", .action = set_vpak_option, .arg = (void *) (1)},
+    { .text = "Port 2", .action = set_vpak_option, .arg = (void *) (2)},
+    { .text = "Port 3", .action = set_vpak_option, .arg = (void *) (3)},
+    { .text = "Port 4", .action = set_vpak_option, .arg = (void *) (4)},
+    { .text = "Off", .action = set_vpak_option, .arg = (void *) (0)},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -848,6 +1235,7 @@ static component_context_menu_t options_context_menu = { .list = {
     { .text = "Save States", .submenu = &set_savestate_options_menu },
     { .text = "Virtual Controller Pak", .submenu = &set_vpak_options_menu },
     { .text = "Slow motion", .submenu = &set_slowmotion_options_menu },
+    { .text = "Hotkeys and Screenshot", .action = open_hotkeys },
     { .text = "Use Cheats", .submenu = &set_cheat_options_menu },
     { .text = "Datel Code Editor", .action = open_datel_code_editor },
 #ifdef FEATURE_PATCHER_GUI_ENABLED
@@ -910,9 +1298,8 @@ static int get_rom_savestate_current_selection (menu_t *menu) {
 }
 
 static int get_rom_vpak_current_selection (menu_t *menu) {
-    return find_menu_item_index_by_arg(
-        &set_vpak_options_menu,
-        (void *) (menu->load.rom_info.settings.vpak_enabled ? true : false));
+    int port = menu->load.rom_info.settings.vpak_enabled ? menu->load.rom_info.settings.vpak_port : 0;
+    return find_menu_item_index_by_arg(&set_vpak_options_menu, (void *) (uintptr_t) port);
 }
 
 static int get_rom_slowmotion_current_selection (menu_t *menu) {
@@ -992,6 +1379,7 @@ static void process (menu_t *menu) {
 }
 
 static void draw (menu_t *menu, surface_t *d) {
+    char key_save_text[40], key_load_text[40];
     rdpq_attach(d, NULL);
 
     ui_components_background_draw();
@@ -1030,6 +1418,7 @@ static void draw (menu_t *menu, surface_t *d) {
             "Rumble PAK:\t\t%s\n"
             "Transfer PAK:\t\t%s\n"
             "Save States:\t\t%s, pak %s\n"
+            "Hotkeys:\t\t\t%s save, %s load\n"
             "Datel Cheats:\t\t%s\n"
             "Patches:\t\t\t%s\n"
             "Clear RDRAM:\t\t%s\n"
@@ -1041,7 +1430,9 @@ static void draw (menu_t *menu, surface_t *d) {
             format_rom_pak_feature_info(menu->load.rom_info.features.rumble_pak),
             format_rom_pak_feature_info(menu->load.rom_info.features.transfer_pak),
             format_boolean_type(menu->load.rom_info.settings.savestates_enabled),
-            format_boolean_type(menu->load.rom_info.settings.vpak_enabled),
+            format_vpak_info(&menu->load.rom_info),
+            sc64ss_keys_text(sc64ss_key_effective(menu->load.rom_info.settings.hotkey_save, menu->settings.ss_key_save, SC64SS_KEY_DEFAULT_SAVE), key_save_text, sizeof(key_save_text)),
+            sc64ss_keys_text(sc64ss_key_effective(menu->load.rom_info.settings.hotkey_load, menu->settings.ss_key_load, SC64SS_KEY_DEFAULT_LOAD), key_load_text, sizeof(key_load_text)),
             format_boolean_type(menu->load.rom_info.settings.cheats_enabled),
             format_boolean_type(menu->load.rom_info.settings.patches_enabled),
             format_boolean_type(menu->load.rom_info.settings.clear_rdram_enabled)
@@ -1205,6 +1596,32 @@ static void load (menu_t *menu) {
     bool ce_cheats = is_memory_expanded() && menu->load.rom_info.settings.cheats_enabled;
     bool ce_states = is_memory_expanded() && menu->load.rom_info.settings.savestates_enabled;
     bool ce_vpak = is_memory_expanded() && menu->load.rom_info.settings.vpak_enabled;
+    // SC64SS: the hotkeys (the ROM's own, else the menu's, else built in) and the screenshot
+    // button; a screenshot button alone arms the routine as save states do
+    uint16_t ce_key_save = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_save, menu->settings.ss_key_save, SC64SS_KEY_DEFAULT_SAVE);
+    uint16_t ce_key_load = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_load, menu->settings.ss_key_load, SC64SS_KEY_DEFAULT_LOAD);
+    uint16_t ce_key_panel = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_panel, menu->settings.ss_key_panel, SC64SS_KEY_DEFAULT_PANEL);
+    uint16_t ce_key_step = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_step, menu->settings.ss_key_step, SC64SS_KEY_DEFAULT_STEP);
+    uint16_t ce_key_shot = sc64ss_keys_parse(menu->load.rom_info.settings.screenshot_button);
+    bool ce_shots = is_memory_expanded() && (ce_key_shot != 0);
+    if (menu->load.rom_info.libdragon_old && (ce_states || ce_vpak || ce_shots)) {
+        // SC64SS: libdragon's entry code from before its own boot code copies the game's
+        // exception vectors in over the routine's way in; the game never came up with the
+        // routine installed (a black screen). It stays out: states, pak and screenshots off.
+        debugf("SC64SS: libdragon entry code from before its own boot code: the routine stays out\n");
+        ce_states = false;
+        ce_vpak = false;
+        ce_shots = false;
+    }
+    if (menu->load.rom_info.libdragon && !menu->load.rom_info.libdragon_handoff && (ce_states || ce_vpak || ce_shots)) {
+        // SC64SS: libdragon's boot code, but not the hand-off the routine rides in on (a
+        // boot code newer than this menu knows): the routine stays out, the game runs as it
+        // always did (boot.c guards the same way)
+        debugf("SC64SS: libdragon boot code without the hand-off the routine knows: the routine stays out\n");
+        ce_states = false;
+        ce_vpak = false;
+        ce_shots = false;
+    }
     // SC64SS: the codes first. With codes the engine sits at its classic place at the top
     // of RAM and the hook with it (resident, as before borrowed mode); without codes the
     // release's one placement is borrowed.
@@ -1284,7 +1701,15 @@ static void load (menu_t *menu) {
     // monitor borrow the hook's home per action, for states and for the virtual pak alike
     // (the monitor serves the pak from the cart). Codes need the classic placement.
     // The Slow motion option (hook_borrowed=0 in the ROM's ini) keeps the resident hook.
-    bool ce_borrowed = (ce_states || ce_vpak) && menu->load.rom_info.settings.hook_borrowed && !ce_codes && !ce_resident_title;
+    bool ce_borrowed = (ce_states || ce_vpak || ce_shots) && menu->load.rom_info.settings.hook_borrowed && !ce_codes && !ce_resident_title;
+    if (!ce_borrowed && (ce_states || ce_vpak || ce_shots) && !ce_codes && !ce_resident_title && sc64ss_full_ram_title(&menu->load.rom_info)) {
+        ce_borrowed = true;                   // the resident hook's home is this game's RAM: the borrowed engine, whatever an old ini says
+        debugf("SC64SS: %.4s uses all of the Expansion Pak: the borrowed engine, whatever the ini says\n", menu->load.rom_info.game_code);
+    }
+    if (ce_borrowed && menu->load.rom_info.libdragon) {
+        ce_borrowed = false;                  // a libdragon ROM keeps the resident hook: its boot code clears all of
+        debugf("SC64SS: libdragon ROM, resident placement\n");   // RAM and the borrowed placement is not settled for it yet
+    }
     menu->boot_params->hook_borrowed = ce_borrowed;
     uint32_t ce_slots[SC64SS_SLOTS_MAX];
     uint32_t ce_slots_n = 0;
@@ -1294,7 +1719,7 @@ static void load (menu_t *menu) {
     menu->boot_params->hook_size = 0;
     menu->boot_params->boot_patches = NULL;
     menu->boot_params->boot_patch_count = 0;
-    if (ce_states || ce_vpak) {
+    if (ce_states || ce_vpak || ce_shots) {
         // SC64SS: the engine's furniture on the cart (the frame stash, the hook staging,
         // the virtual pak, the monitor, the stash) sits from SC64SS_FRAME_STASH_PI up; a
         // ROM that reaches it (64 MiB: Conker, Resident Evil 2) boots without the engine.
@@ -1303,10 +1728,11 @@ static void load (menu_t *menu) {
             debugf("SC64SS: a %lld byte ROM leaves no room on the cart, save states and the virtual pak off\n", rom_size);
             ce_states = false;
             ce_vpak = false;
+            ce_shots = false;
         }
     }
     if (ce_states) {
-        ce_slots_n = sc64ss_slot_table(rom_size, ce_slots, SC64SS_STATE_SLOT_LEN_B);   // one layout for both placements
+        ce_slots_n = sc64ss_slot_table(rom_size, ce_slots, SC64SS_STATE_SLOT_LEN_B, menu->load.rom_info.libdragon);   // one layout for both placements
         if (ce_slots_n == 0) {
             debugf("SC64SS: no room for a state slot above a %lld byte ROM, save states off\n", rom_size);
             ce_states = false;
@@ -1315,11 +1741,12 @@ static void load (menu_t *menu) {
             ce_states = false;
         }
     }
-    if (ce_vpak && (sc64ss_hook_blob_size > SC64SS_HOOK_STAGING_LEN)) {
+    if ((ce_vpak || ce_shots) && (sc64ss_hook_blob_size > SC64SS_HOOK_STAGING_LEN)) {
         ce_vpak = false;
+        ce_shots = false;
     }
-    if (ce_cheats || ce_states || ce_vpak) {
-        if ((cheat_item_count == 2) && !ce_states && !ce_vpak) {
+    if (ce_cheats || ce_states || ce_vpak || ce_shots) {
+        if ((cheat_item_count == 2) && !ce_states && !ce_vpak && !ce_shots) {
             debugf("Cheats enabled, but no cheats found\n");
         } else {
             uint32_t *cheats = malloc(cheat_item_count * sizeof(uint32_t));
@@ -1330,7 +1757,7 @@ static void load (menu_t *menu) {
                 }
                 debugf("Cheats enabled, %u cheats found\n", cheat_item_count / 2);
                 menu->boot_params->cheat_list = cheats;
-                if (ce_states || ce_vpak) {
+                if (ce_states || ce_vpak || ce_shots) {
                     menu->boot_params->hook_blob = sc64ss_hook_blob;
                     menu->boot_params->hook_size = sc64ss_hook_blob_size;
                     // SC64SS: stage the hook in cart SDRAM (SC64SS_HOOK_STAGING_PI); the boot
@@ -1350,6 +1777,14 @@ static void load (menu_t *menu) {
                             }
                             sc64ss_cfg[1] = ce_slots_n;
                             sc64ss_cfg[15] = (uint32_t) rom_size;
+                            sc64ss_cfg[10] = ce_key_save;     // hook_cfg.combo_save
+                            sc64ss_cfg[11] = ce_key_load;     // hook_cfg.combo_load
+                            sc64ss_cfg[24] = ce_key_panel;    // hook_cfg.combo_menu
+#if SC64SS_HOOK_CFG_WORDS > 44
+                            sc64ss_cfg[40] = ce_key_step;     // hook_cfg.combo_step
+                            sc64ss_cfg[41] = ce_key_shot;     // hook_cfg.combo_shot
+                            sc64ss_cfg[42] = ce_shots ? sc64ss_prepare_shot_file(menu, sc64ss_cfg) : 0;   // hook_cfg.shot_sectors (+ shot_fill, shot_count)
+#endif
                             // Always capture the full 8 MiB. The 4 MiB "half the
                             // freeze" shortcut trusted rom_info's Expansion Pak
                             // flag, but that database is incomplete: Banjo-Tooie
@@ -1367,9 +1802,20 @@ static void load (menu_t *menu) {
                             }
                             if (ce_vpak && sc64ss_prepare_pak(menu)) {
                                 sc64ss_cfg[27] |= 4;       // hook_cfg.spare bit 2: the virtual pak is in
+                                sc64ss_cfg[27] |= (uint32_t) ((menu->load.rom_info.settings.vpak_port - 1) & 3) << 12;   // bits 12..13: its port at launch
                             }
                             data_cache_hit_writeback(sc64ss_cfg, sizeof(sc64ss_cfg));
                             dma_write(sc64ss_cfg, SC64SS_HOOK_STAGING_PI + SC64SS_HOOK_CFG_OFFSET, sizeof(sc64ss_cfg));
+                            if (menu->load.rom_info.check_code_from_content) {
+                                // the hook tells a ROM by the check code words of its header. A ROM
+                                // whose header has none gets the computed one written there (nothing
+                                // of the ROM's reads those words), so its states and files agree.
+                                static uint32_t sc64ss_ident[4] __attribute__((aligned(16)));
+                                sc64ss_ident[0] = (uint32_t) (menu->load.rom_info.check_code >> 32);
+                                sc64ss_ident[1] = (uint32_t) (menu->load.rom_info.check_code & 0xFFFFFFFFULL);
+                                data_cache_hit_writeback(sc64ss_ident, sizeof(sc64ss_ident));
+                                dma_write(sc64ss_ident, 0x10000010, 8);
+                            }
                             if (ce_borrowed) {
                                 // the monitor, run in place from the cart by the vector-page gate
                                 const uint32_t *mon = sc64ss_monitor_blob;
@@ -1666,8 +2112,10 @@ void view_load_rom_display (menu_t *menu, surface_t *display) {
     }
 
     if (menu->next_mode != MENU_MODE_LOAD_ROM && menu->next_mode != MENU_MODE_DATEL_CODE_EDITOR) {
-        menu->load.load_history_id = -1;
-        menu->load.load_favorite_id = -1;
+        if (menu->next_mode != MENU_MODE_HOTKEYS) {   // SC64SS: the hotkeys page comes back to this ROM,
+            menu->load.load_history_id = -1;          // wherever it was opened from
+            menu->load.load_favorite_id = -1;
+        }
         deinit();
     }
 }

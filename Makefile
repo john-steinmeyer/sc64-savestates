@@ -83,6 +83,7 @@ SRCS = \
 	menu/views/load_disk.c \
 	menu/views/load_emulator.c \
 	menu/views/load_rom.c \
+	menu/views/hotkeys.c \
 	menu/views/music_player.c \
 	menu/views/startup.c \
 	menu/views/system_info.c \

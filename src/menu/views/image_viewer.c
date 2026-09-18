@@ -37,6 +37,58 @@ static void image_callback (png_err_t err, surface_t *decoded_image, void *callb
     }
 }
 
+// SC64SS: the decode of the browser's current entry (the view's init, and a move to a neighbour)
+static void image_start (menu_t *menu) {
+    show_message = false;
+    image_loading = true;
+    image = NULL;
+    int max_w = display_get_width();
+    int max_h = display_get_height();
+
+    path_t *path = path_clone_push(menu->browser.directory, menu->browser.entry->name);
+
+    png_err_t err = png_decoder_start(path_get(path), max_w, max_h, image_callback, menu);
+    if (err != PNG_OK) {
+        image_loading = false;
+        ui_components_background_reload();
+        menu_show_error(menu, convert_error_message(err));
+    }
+
+    path_free(path);
+}
+
+// SC64SS: the next image in the folder in one direction (-1 back, +1 on), or -1 when there is none
+static int image_neighbour (menu_t *menu, int dir) {
+    for (int i = menu->browser.selected + dir; (i >= 0) && (i < menu->browser.entries); i += dir) {
+        if (menu->browser.list[i].type == ENTRY_TYPE_IMAGE) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// SC64SS: L, R, C-Left, C-Right and the D-pad move to the previous or next image in the folder
+static void image_move (menu_t *menu, int dir) {
+    int i = image_neighbour(menu, dir);
+    if (i < 0) {
+        sound_play_effect(SFX_ERROR);
+        return;
+    }
+    if (image_loading) {
+        png_decoder_abort();
+        image_loading = false;
+    }
+    if (image) {
+        surface_free(image);
+        free(image);
+        image = NULL;
+    }
+    menu->browser.selected = i;
+    menu->browser.entry = &menu->browser.list[i];
+    sound_play_effect(SFX_CURSOR);
+    image_start(menu);
+}
+
 
 static void process (menu_t *menu) {
     if (menu->actions.back) {
@@ -55,6 +107,10 @@ static void process (menu_t *menu) {
             show_message = true;
         }
         sound_play_effect(SFX_ENTER);
+    } else if (!show_message && (menu->actions.go_left || menu->actions.lz_context)) {
+        image_move(menu, -1);
+    } else if (!show_message && (menu->actions.go_right || menu->actions.options)) {
+        image_move(menu, 1);
     }
 }
 
@@ -123,26 +179,11 @@ static void deinit (menu_t *menu) {
 
 
 void view_image_viewer_init (menu_t *menu) {
-    show_message = false;
-    image_loading = true;
     image_set_as_background = false;
-    image = NULL;
     // Free the background image temporarily so the PNG decoder has its full memory budget;
-    // ui_components_background_reload() restores it if the user does not set a new background
+    // ui_components_background_reload() restores it unless a new one is set
     ui_components_background_image_free_only();
-    int max_w = display_get_width();
-    int max_h = display_get_height();
-
-    path_t *path = path_clone_push(menu->browser.directory, menu->browser.entry->name);
-
-    png_err_t err = png_decoder_start(path_get(path), max_w, max_h, image_callback, menu);
-    if (err != PNG_OK) {
-        image_loading = false;
-        ui_components_background_reload();
-        menu_show_error(menu, convert_error_message(err));
-    }
-
-    path_free(path);
+    image_start(menu);
 }
 
 void view_image_viewer_display (menu_t *menu, surface_t *display) {

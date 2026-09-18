@@ -19,7 +19,7 @@ writer of a later version keeps to them so that files made today stay loadable.
 | 0x3E00 | 512 | a zeroed sector (see "Writing") |
 | 0x4000 | `image_len` | the RAM image, from address 0x80000000 |
 
-A state written by this build (0.3.3-ss1.1, hook version 10 and up) has `image_len`
+A state written by this build (0.3.3-ss1.2, hook version 12; version 11 states have the same shape) has `image_len`
 = 0x800000: all 8 MiB of RAM (the 128 KiB the routine borrows come from its stash,
 so the image holds the game's bytes), followed at 0x804000 by the RSP's memories
 (region kind 1, below), so the file's used length is 0x806000 bytes, which is also
@@ -41,7 +41,7 @@ its allocated size. States written by the 0.3.3-ss1.0 build have `image_len` =
 | 0x20 | `cause`, `badvaddr` | CP0 at the moment of capture |
 | 0x28 | `compare_delta` | CP0 Compare minus Count at capture |
 | 0x2C | `mi_mask` | MI interrupt mask |
-| 0x30 | `reraise_sp` | the interrupt the state was taken on: 0 VI, 1 RSP, 2 RDP |
+| 0x30 | `reraise_sp` | the interrupt the state was taken on: 0 VI, 1 RSP, 2 RDP. Hook version 12 and up: 0x10 set means a VI moment the routine held while the RSP's queue ran dry (libdragon games), with bit 0 (RSP) and bit 1 (RDP) the interrupts that arrived during the hold, raised again by a load; 0x20 set means the RSP was halted in its wait for the CPU and runs on from there after a load |
 | 0x34 | `memsize` | the game's `osMemSize` |
 | 0x38 | `dma_ticks`, `wait_frames` | how long the save took (diagnostic) |
 | 0x40 | `hook_version` | the hook that wrote it |
@@ -57,6 +57,7 @@ its allocated size. States written by the 0.3.3-ss1.0 build have `image_len` =
 | 0xC0 | CPU context | 32 GPRs, LO, HI, 32 FPRs (64-bit each), Status, EPC, FCR31, EntryHi, then 32 TLB entries of 4 words |
 | 0x4E0 | regions[8] | {kind, offset, length, arg} per entry. Kind 1 is the RSP's memories: 4 KiB DMEM then 4 KiB IMEM at `offset` (0x804000), `length` 0x2000, `arg` the RSP's program counter at capture. Other kinds may come in later versions |
 | 0x560 | rcp[8] | hook version 9 and up: DPC_START, DPC_END, DPC_CURRENT and SP_PC at capture, the rest zero (earlier writers left zeros; a loader with CURRENT == END and the RDP idle puts the RDP back there) |
+| 0x580 | rsp_gpr[32] | hook version 11 and up: word 0 is the marker `RSPG` (0x52535047) when words 1..31 hold the RSP's scalar registers 1..31 at capture, zero otherwise. Written for games built with libdragon, whose RSP command queue sleeps with its place in a register; a loader puts them back after the RSP's memories and program counter |
 
 The checksum is a rotate-left-by-one and exclusive-or over the 1024 header words,
 seeded with the magic, with the checksum word taken as zero; a result of zero is

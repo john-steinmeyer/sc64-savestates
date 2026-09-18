@@ -123,6 +123,10 @@ typedef struct {
     } libultra;
 
     int64_t check_code;            /**< The check code defined in the ROM's header */
+    bool check_code_from_content;  /**< The header's check code was zero: this one is computed from the ROM's contents */
+    bool libdragon;                /**< The boot code is libdragon's (its banner sits in the IPL3) */
+    bool libdragon_old;            /**< libdragon's entry code from before its own boot code (2010-2023): retail boot code, the game copies its own vectors in at start, and the routine cannot ride along */
+    bool libdragon_handoff;        /**< libdragon's boot code hands the game over where the routine expects (found exactly once); otherwise the routine stays out */
     char title[20];                 /**< The title defined in the ROM's header */
 
     union {
@@ -162,11 +166,17 @@ typedef struct {
     struct {
         bool cheats_enabled;        /**< Cheats enabled */
         bool savestates_enabled;    /**< SC64SS: save states enabled (off by default: slot files) */
-        bool vpak_enabled;          /**< SC64SS: a virtual Controller Pak in port 1 (on by default) */
+        bool vpak_enabled;          /**< SC64SS: a virtual Controller Pak (on by default for the database's pak users) */
+        uint8_t vpak_port;          /**< SC64SS: the port it sits in at launch, 1..4 (1 by default; the panel can move it) */
         bool hook_borrowed;         /**< SC64SS: the borrowed-RAM engine (the default); false = the resident hook, the Slow motion option (slots and files share one layout, so it switches freely) */
         bool watch_reads;           /**< SC64SS: the engine's watchpoint covers reads of the vector at 0x180 too (on by default; a built-in list and watch_reads=0 in the ini switch it off for titles whose own reads of the vector must not be redirected) */
         bool patches_enabled;       /**< Patches enabled */
         bool clear_rdram_enabled;   /**< Zero RDRAM before boot (workaround for ROMs with incomplete BSS init) */
+        char hotkey_save[32];       /**< SC64SS: this ROM's own quick save buttons ("L+R+Up"; empty: the menu's setting) */
+        char hotkey_load[32];       /**< SC64SS: ... quick load */
+        char hotkey_panel[32];      /**< SC64SS: ... the slot panel */
+        char hotkey_step[32];       /**< SC64SS: ... the frame step button */
+        char screenshot_button[32]; /**< SC64SS: the screenshot button (empty: none) */
     } settings;                     /**< The ROM settings */
 
     struct {
@@ -286,7 +296,20 @@ rom_err_t rom_config_setting_set_savestates (path_t *path, rom_info_t *rom_info,
  * @brief SC64SS: set the virtual Controller Pak setting for the ROM.
  */
 rom_err_t rom_config_setting_set_vpak (path_t *path, rom_info_t *rom_info, bool enabled);
+rom_err_t rom_config_setting_set_vpak_port (path_t *path, rom_info_t *rom_info, int port);
 rom_err_t rom_config_setting_set_hook_borrowed (path_t *path, rom_info_t *rom_info, bool enabled);
+
+/** @brief SC64SS: a text setting in the ROM's ini (NULL or empty removes the key) */
+rom_err_t rom_config_setting_set_text (path_t *path, const char *id, const char *value);
+
+/** SC64SS: hotkeys. A mask has the controller's own bit order (A 0x8000 ... C-Right 0x0001);
+ * the text form names buttons joined by "+": "L+R+Up". */
+#define SC64SS_KEY_DEFAULT_SAVE   "L+R+Up"
+#define SC64SS_KEY_DEFAULT_LOAD   "L+R+Down"
+#define SC64SS_KEY_DEFAULT_PANEL  "R+Z+Start"
+#define SC64SS_KEY_DEFAULT_STEP   "L"
+uint16_t sc64ss_keys_parse (const char *text);
+char *sc64ss_keys_text (uint16_t mask, char *buf, size_t len);
 
 /**
  * @brief Set whether RDRAM should be zeroed before booting this ROM.

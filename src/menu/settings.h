@@ -61,6 +61,12 @@ typedef struct {
     /** @brief Enable rumble feedback within the menu */
     bool rumble_enabled;
 
+    /** @brief SC64SS: the save state hotkeys every game gets unless its own ini says otherwise ("L+R+Up") */
+    char *ss_key_save;
+    char *ss_key_load;
+    char *ss_key_panel;
+    char *ss_key_step;
+
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
     /** @brief Enable the ability to bypass the menu and instantly load a ROM on power and reset button */
     bool rom_autoload_enabled;
