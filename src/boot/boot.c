@@ -108,6 +108,10 @@ static void boot_libdragon_stage (io32_t *base, uint32_t handoff) {
  */
 void boot (boot_params_t *params) {
     cic_type_t cic_type = boot_detect_cic(params);
+    // SC64SS: whether the ROM boots with libdragon's boot code, read here (the CIC detection
+    // reads the ROM the same way), not after the PI reset below: read there, the console hung
+    // on every game.
+    bool libdragon = boot_ipl3_is_libdragon(boot_get_device_base(params));
 
     if (params->detect_cic_seed) {
         params->cic_seed = cic_get_seed(cic_type);
@@ -153,12 +157,37 @@ void boot (boot_params_t *params) {
     while (cpu_io_read(&SP->DMA_BUSY));
 
     cpu_io_write(&PI->SR, PI_SR_CLR_INTR | PI_SR_RESET);
+
+    // Wait for the VI to finish its current frame before proceeding. 
+    // This ensures that the VI is not actively reading from RDRAM, 
+    // which could lead to data corruption when we clear RDRAM.
     while ((cpu_io_read(&VI->CURR_LINE) & ~(VI_CURR_LINE_FIELD)) != 0);
-    cpu_io_write(&VI->V_INTR, 0x3FF);
-    cpu_io_write(&VI->H_LIMITS, 0);
-    cpu_io_write(&VI->CURR_LINE, 0);
+
+    /* Fully re-Initialize Audio registers (all booted ROMs should do their own initialization) */
     cpu_io_write(&AI->MADDR, 0);
     cpu_io_write(&AI->LEN, 0);
+
+    /* Fully re-Initialize VI registers (all booted ROMs should do their own initialization) */
+    cpu_io_write(&VI->V_INTR, 0x3FF); /*< Vertical Interrupt. */
+    cpu_io_write(&VI->H_LIMITS, 0); /*< Horizontal Limits. */
+    cpu_io_write(&VI->CURR_LINE, 0); /*< Current Scanline. */
+    // SC64SS: not for a ROM with libdragon's boot code. Its video setup is applied from the
+    // vblank interrupt unless the VI is off, and with the VI left on and every timing zeroed
+    // that interrupt never comes: FlappyBird stayed a blank screen. Those ROMs keep the three
+    // writes above (the behaviour every libdragon title was tested with); the rest get the
+    // full reset, which stops crashes in Ocarina of Time.
+    if (!libdragon) {
+    cpu_io_write(&VI->MADDR, 0); /**< Memory Address. */
+    cpu_io_write(&VI->H_WIDTH, 0); /**< Horizontal Width. */
+    cpu_io_write(&VI->TIMING, 0); /**< Timings. */
+    cpu_io_write(&VI->V_SYNC, 0); /**< Vertical Sync. */
+    cpu_io_write(&VI->H_SYNC, 0); /**< Horizontal Sync. (this one is particularly important for RD RAM init) */
+    cpu_io_write(&VI->H_SYNC_LEAP, 0); /**< Horizontal Sync Leap. */
+    cpu_io_write(&VI->V_LIMITS, 0); /**< Vertical Limits. */
+    cpu_io_write(&VI->COLOR_BURST, 0); /**< Color Burst. */
+    cpu_io_write(&VI->H_SCALE, 0); /**< Horizontal Scale. */
+    cpu_io_write(&VI->V_SCALE, 0); /**< Vertical Scale. */
+    }
 
     while (cpu_io_read(&SP->SR) & SP_SR_DMA_BUSY);
 
@@ -197,7 +226,6 @@ void boot (boot_params_t *params) {
     // SC64SS: a ROM with libdragon's IPL3 gets the engine through a stub on the cart
     // (cheats.h): nothing parked in RAM survives that boot code, and its hand-off to the
     // game runs from the cart, where the menu can point it at the stub.
-    bool libdragon = boot_ipl3_is_libdragon(base);
     uint32_t handoff = libdragon ? boot_libdragon_handoff(base) : 0;
 
     // SC64SS: libdragon's boot code without the hand-off (a boot code newer than this finder
