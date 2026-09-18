@@ -6,10 +6,11 @@ screenshots and configurable hotkeys for the SummerCart64. Everything the stock 
 does, it still does. Problems with the additions belong in this repository's issues,
 not upstream's.
 
-[![Save states on original N64 hardware with the SummerCart64: the video](docs/media/video.jpg)](https://www.youtube.com/watch?v=yBQcb5c4tq0)
+[![Save states on original N64 hardware with the SummerCart64: the 1.2 video](docs/media/video.jpg)](https://www.youtube.com/watch?v=ZGR4FXc2xOI)
 
-**[Watch the demo (4½ minutes)](https://www.youtube.com/watch?v=yBQcb5c4tq0)**: the options, the slot panel, a load, slow motion,
-suspend and resume, on the console.
+[Watch the 1.2 video (3 minutes)](https://www.youtube.com/watch?v=ZGR4FXc2xOI): screenshots, the per-game options, custom
+hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
+[1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
 What it adds:
 
