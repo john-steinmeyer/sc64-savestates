@@ -258,6 +258,7 @@ typedef struct component_context_menu {
         void (*action)(menu_t *menu, void *arg); /**< Action function for the menu item */
         void *arg; /**< Argument for the action function */
         struct component_context_menu *submenu; /**< Pointer to the submenu */
+        bool gray; /**< SC64SS: drawn in gray (the action still runs, to say why) */
     } list[]; /**< List of menu items */
 } component_context_menu_t;
 

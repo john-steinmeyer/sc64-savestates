@@ -131,6 +131,7 @@ void ui_components_context_menu_draw(component_context_menu_t *cm) {
 
     for (int i = 0; i < cm->row_count; i++) {
         const char *text = cm->list[i].text;
+        rdpq_paragraph_builder_style(cm->list[i].gray ? STL_GRAY : STL_DEFAULT);   // SC64SS: a grayed row
         rdpq_paragraph_builder_span(text, strlen(text));
         if (cm->list[i + 1].text != NULL) {
             rdpq_paragraph_builder_newline();
