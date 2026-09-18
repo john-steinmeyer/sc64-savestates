@@ -4000,16 +4000,49 @@ static void shot_request(void) {
     shot_ticks = 0;
 }
 
-/* the screenshot, once the displayed frame is one without a message drawn on it (every
- * exception looks, so a new buffer is caught before the feedback text goes on it) */
+/* The moment a screenshot may be taken at, picked as the state path picks its own
+ * (state_service): an interrupt, nothing but the RCP line pending (a Compare match the game
+ * listens for has to reach it: the freeze re-arms Compare, and one already due would be
+ * dropped), and of the lines the game has enabled the VI's, the RSP's or the RDP's alone,
+ * with the PI and the SI idle. The frame copy's DMAs clear the PI's line as they finish:
+ * taken on the game's own DMA-done exception, or with one pending, the copy swallowed the
+ * completion a thread of the game was waiting for, and that thread never woke. An audio
+ * engine streams its samples through such DMAs, in a burst after every hold, so a run of
+ * quick taps found one of those exceptions within a few shots: the music stopped, or the
+ * game did. Returns the line the moment is (MI_INTR_VI, _SP or _DP), 0 for none. */
+#define SHOT_WAIT_MAX   120u     /* VI ticks to wait for one; then the shot is dropped, with a message */
+static uint32_t shot_moment(void) {
+    uint32_t cz = c0_cause();
+    if ((cz & CAUSE_EXC_MASK) != 0) return 0;
+    uint32_t ip = cz & 0xFF00u;
+    if (!(c0_status() & (1u << 15))) ip &= ~(1u << 15);
+    if (ip != CAUSE_IP2_RCP) return 0;
+    uint32_t mi = MI_INTERRUPT & MI_INTR_MASK & 0x3Fu;
+    if ((mi != MI_INTR_VI) && (mi != MI_INTR_SP) && (mi != MI_INTR_DP)) return 0;
+    if ((PI_STATUS & 3u) || (SI_STATUS & 3u)) return 0;
+    return mi;
+}
+
+
+/* the screenshot, at a clean moment (a frame boundary for the first frames, then the RSP's
+ * or RDP's done as well: Perfect Dark's are busy at every VI), once the displayed frame is
+ * one without a message drawn on it (every exception looks, so a new buffer is caught before
+ * the feedback text goes on it) */
 static void shot_service(void) {
     if (shot_state != 1u) return;
-    if (PI_STATUS & 3u) return;                        /* the game's DMA: next time */
+    uint32_t mi = shot_moment();
+    if (mi && (mi != MI_INTR_VI) && (shot_ticks < STATE_PREFER_VI)) mi = 0;
+    if (!mi) {
+        if (shot_ticks > SHOT_WAIT_MAX) {
+            shot_state = 0;
+            crumb(0x69u, ST_TIMEOUT, shot_ticks);
+            feedback_show("SCREENSHOT FAILED");
+        }
+        return;
+    }
     uint32_t o = VI_ORIGIN_REG & 0x00FFFFFFu;
     if (msg_ticks && (shot_ticks < 4u) && (fb_same_buffer(o) == fb_drawn)) return;
-    uint32_t cz = c0_cause();                          /* on a VI interrupt the freeze aims the field the game would */
-    uint32_t at_vi = (((cz & CAUSE_EXC_MASK) == 0) && (cz & CAUSE_IP2_RCP) && (MI_INTERRUPT & MI_INTR_VI)) ? 1u : 0u;
-    vi_frz_begin(at_vi);
+    vi_frz_begin(mi == MI_INTR_VI);                   /* at a VI interrupt the freeze aims the field the game would */
     uint32_t r = shot_capture();
     vi_frz_end();
     shot_state = 0;

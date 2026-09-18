@@ -6,7 +6,7 @@
 
 #define SC64SS_HOOK_ADDRESS (0x807D0000UL)
 #define SC64SS_HOOK_DEV (0)
-#define SC64SS_HOOK_CFG_OFFSET (0x1B3B0UL)   /* struct hook_cfg inside the blob */
+#define SC64SS_HOOK_CFG_OFFSET (0x1B410UL)   /* struct hook_cfg inside the blob */
 #define SC64SS_HOOK_CFG_MAGIC (0x43464731UL)
 #define SC64SS_HOOK_CFG_WORDS (48)
 
