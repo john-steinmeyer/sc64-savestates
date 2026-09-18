@@ -589,28 +589,50 @@ A few things are particular to these games:
   the game), and the state slots stay below the part of the cartridge memory that
   libdragon's logging writes into (six slots for a small ROM instead of seven).
 
-I've tested FlappyBird (the N64 port), Kraken64, Legend of Elya, Junk Runner 64, Cathode
-Quest 64, VoidStrider64, Driving Strikers 64, the N64brew Game Jam volleyball game,
-nineteen of the N64brew Game Jam 2025 entries (BotBoy!64, Box Fix Box With Box, Console
-Clash, Crystal Dreams on Death's Wing, DamN64, Somewhere to Escape, Kaiju Response Team
-and its debug build, Moonfish, Mysterious Barricades, Pandemonium, Phazer 64, Plug 'N'
-Repair, Repairman vs Creatures, Robo Renovations, SUGGOMA, Uncharted Terra 2264, the
-untitled racing game, Wizard Critter 64, Wrench Wrangle), and libdragon's hello-world,
-joypad, controller test, Controller Pak, RDP, RSP queue, sprite animation, font, pixel
-shader, mesh viewer, audio player, mixer test, save doodle and OpenGL demo examples,
-logging builds among them. All save and load, with the combos and the panel, at 240 and
-480 lines, take screenshots, and their states reach the card.
-A full-screen 3D game (libdragon's OpenGL demo, Mysterious Barricades, Pandemonium,
-Repairman vs Creatures) keeps the RSP and the RDP busy at every frame; the routine
-holds such a game at the frame boundary until its RSP queue runs dry, a few frames at
-most, and it saves and loads like the rest. A ROM built with libdragon before it had
-its own boot code (2023) boots the retail way and puts its own exception vectors in as
-it starts, so the routine cannot ride along: the menu recognizes that entry code and
-leaves the routine out for such a ROM (Save States, the virtual pak and the screenshot
-button have no effect on it, and the game runs as it always did), and it does the same
-for a libdragon boot code newer than it knows, one whose hand-off it cannot find. (The
-N64brew Game Jam 2024 collection did not start on my console with or without the
-routine, so it says nothing either way.)
+Every game below saves and loads with the combos and the panel, at 240 and 480 lines,
+takes screenshots, and its states reach the card. A full-screen 3D game keeps the RSP and
+the RDP busy at every frame, so the routine holds it at the frame boundary until its RSP
+queue runs dry, a few frames at most, and it saves and loads like the rest.
+
+| Game | Result | Notes |
+| --- | --- | --- |
+| FlappyBird (the N64 port) | works |  |
+| Kraken64 | works |  |
+| Legend of Elya | works |  |
+| Junk Runner 64 | works |  |
+| Cathode Quest 64 | works |  |
+| VoidStrider64 | works |  |
+| Driving Strikers 64 | works |  |
+| N64brew Game Jam volleyball game | works | 640x480 |
+| BotBoy!64 (Game Jam 2025) | works | one load in about seven crashed the game a few seconds later in testing; not understood yet |
+| Box Fix Box With Box (Game Jam 2025) | works |  |
+| Console Clash (Game Jam 2025) | works |  |
+| Crystal Dreams on Death's Wing (Game Jam 2025) | works |  |
+| DamN64 (Game Jam 2025) | works |  |
+| Somewhere to Escape (Game Jam 2025) | works |  |
+| Kaiju Response Team (Game Jam 2025) | works | its debug build too, which logs over USB |
+| Moonfish (Game Jam 2025) | works |  |
+| Mysterious Barricades (Game Jam 2025) | works | full-screen 3D: held at the frame boundary until the RSP is idle |
+| Pandemonium (Game Jam 2025) | works | full-screen 3D: held at the frame boundary until the RSP is idle |
+| Phazer 64 (Game Jam 2025) | works |  |
+| Plug 'N' Repair (Game Jam 2025) | works |  |
+| Repairman vs Creatures (Game Jam 2025) | works | full-screen 3D: held at the frame boundary until the RSP is idle |
+| Robo Renovations (Game Jam 2025) | works |  |
+| SUGGOMA (Game Jam 2025) | works |  |
+| Uncharted Terra 2264 (Game Jam 2025) | works |  |
+| the untitled racing game (Game Jam 2025) | works |  |
+| Wizard Critter 64 (Game Jam 2025) | works |  |
+| Wrench Wrangle (Game Jam 2025) | works |  |
+| libdragon examples: hello-world, joypad, controller test, Controller Pak, RDP, RSP queue, sprite animation, font, pixel shader, mesh viewer, audio player, mixer test, save doodle | work | logging builds among them |
+| libdragon OpenGL demo | works | full-screen 3D: held at the frame boundary until the RSP is idle |
+| N64brew Game Jam 2024 collection | not tried | does not start on my console with or without the routine, so it says nothing either way |
+
+A ROM built with libdragon before it had its own boot code (2023) boots the retail way and
+puts its own exception vectors in as it starts, so the routine cannot ride along: the menu
+recognizes that entry code and leaves the routine out for such a ROM (Save States, the
+virtual pak and the screenshot button have no effect on it, and the game runs as it always
+did). It does the same for a libdragon boot code newer than it knows, one whose hand-off it
+cannot find.
 
 ## Known limitations
 
