@@ -115,9 +115,15 @@ typedef volatile uint16_t vu16;
  *   0x13F80000 .. 0x13F81000  the screenshot file's run table (SHOT_TABLE_PI, the menu writes it)
  *   0x13F81000 .. 0x13F82000  the screenshot file's header block (SHOT_HDR_PI: the menu writes it at
  *                             launch, the hook keeps its count and entries and copies it to the file)
- *   0x13F82000 .. 0x13FA0000  (free)
+ *   0x13F82000 .. 0x13F90000  (free)
+ *   0x13F90000 .. 0x13F90010  borrowed-RAM mode: the pak stub's trampoline to the monitor's server (a
+ *                             64 KiB boundary: one lui reaches it; pak_stub_place writes it)
+ *   0x13F90010 .. 0x13FA0000  (free)
  *   0x13FA0000 .. 0x13FA3000  a libdragon ROM's boot: the stub, the patcher's copy, the engine's copy (cheats.h)
- *   0x13FA3000 .. 0x13FB0000  (free)
+ *   0x13FA3000 .. 0x13FA4000  the virtual Controller Pak's block CRCs (VPAK_CRC_PI: a word a 32-byte
+ *                             block; the menu computes them at launch, the monitor's write path keeps
+ *                             them, its reads answer with them instead of a CRC loop run from the cart)
+ *   0x13FA4000 .. 0x13FB0000  (free)
  *   0x13FB0000 .. 0x13FB8000  the virtual Controller Pak image (32 KiB)
  *   0x13FB8000 .. 0x13FB9000  its SD file's run table (the menu writes it)
  *   0x13FB9000 .. 0x13FB9100  borrowed-RAM mode: the pak's control block (VPAK_CTL_PI)
@@ -144,12 +150,17 @@ typedef volatile uint16_t vu16;
 #define SHOT_ENTRIES_MAX 508u        /* (4096 - 32) / 8 */
 #define SD_MAGIC_SHOT   0x53484354u  /* "SHCT": the screenshot file's header (the ROM's check code follows) */
 #define VPAK_PI         0x13FB0000u
+#define VPAK_CRC_PI     0x13FA3000u  /* the block CRC table (monitor.S mp_read; a word a block, 4 KiB) */
 #define VPAK_CTL_PI     0x13FB9000u  /* borrowed mode: the pak's control block (monitor.S PAK_CTL_*): 'VPK1',
                                      * state, the dirty stamp, the bank byte, the site's scheme, address, words,
                                      * and at +0x38 the live word: the port, inserted or not (PAK_LIVE_*) */
 #define MON_PAK_OFF     0x00001200u  /* the monitor's pak server (monitor.ld .pak): the RAM stub jumps there */
 #define MON_EPIL_OFF    0x00002200u  /* the monitor's load epilogue (mon_epi_load): borrow_load_exit jumps there */
 #define PAK_STUB_ADDR   0x80000060u  /* the stub's home in the vector page: 8 words, 0x060..0x080 */
+#define PAK_STUB_JR     0x80000118u  /* its tail (jr at / nop): lowpage.S lp_tramp's home, dead once the gate is in */
+#define PAK_DEFER_ADDR  0x800003F4u  /* the stub's deferral flag (monitor.S D_DEFER; the boot zeroes it) */
+#define MON_PAKTRAMP_PI 0x13F90000u  /* the trampoline to the server: lui at / ori / jr at / nop on the cart */
+#define MON_PAKTRAMP_KSEG1 (0xA0000000u | MON_PAKTRAMP_PI)
 /* borrowed-RAM mode (games that use all 8 MiB): the monitor runs in place from the
  * cart; the hook's 128 KiB home is stashed here for the length of one action */
 #define MONITOR_PI      0x13FBA000u
@@ -3014,15 +3025,21 @@ static void vpak_tramp_install(void) {
         if (!j) continue;
         uint32_t sva = va + 4u * (j - 2u);
         /* borrowed mode: the server is on the cart (monitor.S mon_pak_hit) behind a RAM
-         * stub at PAK_STUB_ADDR that waits for the PI first. A handler in kseg0 keeps its
-         * own `jal send_mesg / li a0`: the two words before them become `jal stub / nop`
-         * (scheme 1) and the server redoes what those two did. A handler run through the
-         * TLB (Turok 2) cannot jal into kseg0, so its four words go the resident way, to
-         * the stub (scheme 2), and the server calls send_mesg itself. */
-        uint32_t scheme = 0, nw = 4u;
+         * stub at PAK_STUB_ADDR (pak_stub_place). A handler in kseg0 gives up its `jal
+         * send_mesg / li a0` for `jal stub / nop` and keeps its own acknowledge and
+         * andi, which libultra puts right before the jal (scheme 3): the server sends
+         * the message itself, and the stub can send the handler on without it while the
+         * PI is busy. (Scheme 1, the two words before the jal and the handler's own jal
+         * on return, is kept in the code but no longer chosen.) A handler run through
+         * the TLB (Turok 2) cannot jal into kseg0, so its four words go the resident
+         * way, to the stub (scheme 2), and the server calls send_mesg itself. */
+        uint32_t scheme = 0, nw = 4u, first = j - 2u;
         if (borrowed_mode()) {
-            scheme = ((sva & 0xF0000000u) == 0x80000000u) ? 1u : 2u;
-            nw = (scheme == 1u) ? 2u : 4u;
+            if ((sva & 0xF0000000u) != 0x80000000u) {
+                scheme = 2u; nw = 4u;
+            } else {
+                scheme = 3u; nw = 2u; first = j; sva = va + 4u * first;
+            }
         }
         if ((sva & 0xFFFu) > (0x1000u - 4u * nw)) { crumb(16u, 3u, sva); return; }   /* the words would cross a page */
         uint32_t spa = tlb_translate(sva & 0xFFFFF000u);
@@ -3030,7 +3047,7 @@ static void vpak_tramp_install(void) {
         spa |= sva & 0xFFFu;
         for (uint32_t k = 0; k < 4u; k++) {
             tramp_orig[k] = w[k];
-            tramp_orig[4u + k] = w[j - 2u + k];
+            tramp_orig[4u + k] = ((first + k) < 12u) ? w[first + k] : 0u;   /* past nw: unused */
         }
         tramp_site_va = sva;
         tramp_site_pa = spa;
@@ -3047,16 +3064,49 @@ static void vpak_tramp_install(void) {
     crumb(16u, 5u, hva);
 }
 
-/* on: the site jumps to the trampoline; off: the game's own words (for a state's copy) */
 /* borrowed mode: the stub the patched site jumps to, in the vector page (0x060..0x080,
  * nothing else of ours lives there since EXIT moved out; the game's Count/Compare across
- * a borrow went to the cart for it). It waits for the PI to go idle (a cart fetch under
- * a game's DMA freezes the console) and jumps to the monitor's server. at and a0 are
- * dead at the site either way; ra is left alone (scheme 1's way back). */
+ * a borrow went to the cart for it). A cart fetch under a game's DMA freezes the console,
+ * so the server may run only with the PI idle. at and a0 are dead at the site either way.
+ * Scheme 3 (the handler keeps its acknowledge and andi, the server sends the message): with the
+ * PI busy the stub flags PAK_DEFER_ADDR and returns to the handler without the message,
+ * so the handler finishes and the game's threads run on (the VI manager among them,
+ * whose swap must be on time); the monitor, at its next entry with the PI idle (the
+ * gate admits PI interrupts for this: the DMA's end), runs the SI's read of the PIF
+ * RAM into the block again, and that completion brings the handler back here with the
+ * block as it was (nothing else used the SI: libultra's SI access is held by the
+ * waiting pak thread). The stub that spun here with interrupts off held the VI for
+ * the DMA's length, and a stub that left the SI interrupt pending held the VI manager
+ * thread: THPS3's loading screens jittered either way, a quarter of its VI interrupts
+ * 1 to 2.4 ms late (the development build's VI latency histogram). Eight words: the server's entry is
+ * a 64 KiB boundary on the cart (MON_PAKTRAMP_PI, a trampoline written here) and the
+ * idle path's jr at / nop sit at PAK_STUB_JR.
+ * Schemes 1 and 2: the spinning stub, as before. */
 static void pak_stub_place(void) {
     uint32_t t = MONITOR_KSEG1 + MON_PAK_OFF;
     vu32 *s = (vu32 *)(0xA0000000u | (PAK_STUB_ADDR & 0x1FFFFFFFu));
     dcache_writeback_all();                  /* no dirty line of the page may land on it later */
+    if (tramp_scheme == 3u) {
+        vu32 *j = (vu32 *)(0xA0000000u | (PAK_STUB_JR & 0x1FFFFFFFu));
+        if (rom_write_set(1u)) {
+            pio_write(MON_PAKTRAMP_KSEG1 + 0u, 0x3C010000u | (t >> 16));       /* lui at, hi(mon_pak_hit) */
+            pio_write(MON_PAKTRAMP_KSEG1 + 4u, 0x34210000u | (t & 0xFFFFu));   /* ori at, at, lo */
+            pio_write(MON_PAKTRAMP_KSEG1 + 8u, 0x00200008u);                   /* jr at */
+            pio_write(MON_PAKTRAMP_KSEG1 + 12u, 0);                            /* nop */
+            rom_write_set(0);
+        }
+        s[0] = 0x3C01A460u;                               /* lui at, 0xA460 */
+        s[1] = 0x8C240010u;                               /* lw a0, PI_STATUS(at) */
+        s[2] = 0x30840003u;                               /* andi a0, a0, 3 (DMA or IO busy) */
+        s[3] = 0x10800000u | (((PAK_STUB_JR - (PAK_STUB_ADDR + 0x10u)) >> 2) & 0xFFFFu);   /* beqz a0, PAK_STUB_JR (idle: the server) */
+        s[4] = 0x3C010000u | (MON_PAKTRAMP_KSEG1 >> 16);   /* lui at, 0xB3F9 (the delay slot, both paths: the trampoline) */
+        s[5] = 0x3C048000u;                               /* lui a0, 0x8000 (busy: the flag, back without the message) */
+        s[6] = 0x03E00008u;                               /* jr ra */
+        s[7] = 0xAC810000u | (PAK_DEFER_ADDR & 0xFFFFu);  /* sw at, D_DEFER(a0) (the delay slot) */
+        j[0] = 0x00200008u;                               /* jr at */
+        j[1] = 0;                                         /* nop */
+        return;
+    }
     s[0] = 0x3C04A460u;                      /* 1: lui a0, 0xA460 */
     s[1] = 0x8C840010u;                      /*    lw a0, PI_STATUS(a0) */
     s[2] = 0x30840003u;                      /*    andi a0, a0, 3 (DMA or IO busy) */
@@ -3072,7 +3122,7 @@ static void vpak_tramp_apply(uint32_t on) {
     if (tramp_state != 1u) return;
     vu32 *s = (vu32 *)(0xA0000000u | tramp_site_pa);
     uint32_t j[4], nw = 4u;
-    if (tramp_scheme == 1u) {
+    if ((tramp_scheme == 1u) || (tramp_scheme == 3u)) {
         j[0] = 0x0C000000u | ((PAK_STUB_ADDR >> 2) & 0x03FFFFFFu);                   /* jal stub */
         j[1] = 0; j[2] = 0; j[3] = 0;                                                /* nop */
         nw = 2u;

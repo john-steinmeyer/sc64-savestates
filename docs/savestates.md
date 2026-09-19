@@ -70,7 +70,8 @@ so you can switch it on and off for a game without losing its states (a state sa
 with it on holds the RAM below the routine, 7.75 MiB, and loads either way). The one
 cost: games that use every byte of the Expansion Pak have no room for the routine and
 never boot with it on. The menu refuses the option for the ones it knows about (Donkey
-Kong 64, Perfect Dark, Indiana Jones and the Infernal Machine, San Francisco Rush 2049)
+Kong 64, Perfect Dark, Indiana Jones and the Infernal Machine, San Francisco Rush 2049,
+Tony Hawk's Pro Skater 3, whose high-resolution mode takes the memory)
 and launches them on the cartridge engine whatever their `.ini` says. If a game not on
 that list shows a black screen with it on, switch it off. The same goes for a game's
 optional high-resolution mode, which uses the extra memory: Castlevania: Legacy of
@@ -480,7 +481,7 @@ handler too; the game has no Controller Pak use).
 | Paper Mario | works |  |
 | Paperboy | works |  |
 | Penny Racers | works |  |
-| Perfect Dark | works | brief vertical jitter at the start with the virtual pak on, none in play (the pak's service inside the vblank; a fix is planned) |
+| Perfect Dark | works | a mild jitter for a second at its logos with the virtual pak on: the game writes to its pak there, and a write costs the routine a millisecond from the cartridge (reads are cheap) |
 | PGA European Tour | works |  |
 | Pilotwings 64 | works |  |
 | Pokemon Puzzle League | works |  |
@@ -551,7 +552,7 @@ handler too; the game has no Controller Pak use).
 | Tonic Trouble | works |  |
 | Tony Hawk's Pro Skater | works |  |
 | Tony Hawk's Pro Skater 2 | works |  |
-| Tony Hawk's Pro Skater 3 | works | with Slow motion on, its high-resolution mode does not boot; keep Slow motion off for it. Vertical jitter in its menus with the virtual pak on, none in play (the pak's service inside the vblank; a fix is planned) |
+| Tony Hawk's Pro Skater 3 | works | the menu refuses Slow motion for it: its high-resolution mode uses all of the Expansion Pak. A mild jitter for a second or two at its legal screens with the virtual pak on: the game tests the pak with fifty writes there, and a write costs the routine a millisecond from the cartridge; none in the menus or in play |
 | Top Gear Hyper-Bike | works |  |
 | Top Gear Overdrive | works |  |
 | Top Gear Rally 2 | works |  |

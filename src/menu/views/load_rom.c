@@ -539,6 +539,26 @@ void sc64ss_pak_format (uint8_t *img, uint32_t crc1, uint32_t crc2) {
     memcpy(img + 0x200, fat, 256);
 }
 
+// SC64SS: the accessory data CRC (polynomial 0x85) of a 32-byte block, as the controller
+// answers it; the borrowed-mode server answers a read with the block's bytes and this
+// word from a table on the cart (hook/monitor.S mp_read), its write path keeps the table
+static uint8_t sc64ss_pak_data_crc (const uint8_t *d) {
+    uint32_t crc = 0;
+    for (int i = 0; i < 32; i++) {
+        uint32_t x = crc ^ d[i];
+        crc = 0;
+        if (x & 0x80) crc ^= 0x89;
+        if (x & 0x40) crc ^= 0x86;
+        if (x & 0x20) crc ^= 0x43;
+        if (x & 0x10) crc ^= 0xE3;
+        if (x & 0x08) crc ^= 0xB3;
+        if (x & 0x04) crc ^= 0x9B;
+        if (x & 0x02) crc ^= 0x8F;
+        if (x & 0x01) crc ^= 0x85;
+    }
+    return (uint8_t) (crc & 0xFF);
+}
+
 // SC64SS: the game's virtual Controller Pak: sd:/savestates/paks/<checkcode>.pak (32 KiB, a
 // plain pak image the menu's Controller Pak tools can read), created formatted, loaded
 // into cart memory at SC64SS_VPAK_PI with its run table after it. true = the hook may
@@ -588,6 +608,13 @@ static bool sc64ss_prepare_pak (menu_t *menu) {
             dma_write(img, SC64SS_VPAK_PI, sizeof(img));
             data_cache_hit_writeback(table, sizeof(table));
             dma_write(table, SC64SS_VPAK_PI + SC64SS_VPAK_LEN, sizeof(table));
+            // the block CRCs, a word a block, for the borrowed-mode server's reads
+            static uint32_t crcs[SC64SS_VPAK_LEN / 32] __attribute__((aligned(16)));
+            for (uint32_t b = 0; b < SC64SS_VPAK_LEN / 32; b++) {
+                crcs[b] = sc64ss_pak_data_crc(img + b * 32);
+            }
+            data_cache_hit_writeback(crcs, sizeof(crcs));
+            dma_write(crcs, SC64SS_VPAK_CRC_PI, sizeof(crcs));
             // borrowed mode: the pak's control block starts clean ('VPK1', state 0: the
             // hook installs the game's handler patch in a service borrow, the monitor's
             // server keeps its dirty stamp and bank byte here)
@@ -1011,6 +1038,7 @@ static bool sc64ss_full_ram_title (const rom_info_t *rom_info) {
         { 'N', 'D', 'O' },      // Donkey Kong 64
         { 'N', 'I', 'J' },      // Indiana Jones and the Infernal Machine
         { 'N', 'R', 'U' },      // San Francisco Rush 2049
+        { 'N', '3', 'T' },      // Tony Hawk's Pro Skater 3 (its high-resolution mode)
     };
     for (uint32_t k = 0; k < sizeof(codes) / sizeof(codes[0]); k++) {
         if (memcmp(rom_info->game_code, codes[k], 3) == 0) {

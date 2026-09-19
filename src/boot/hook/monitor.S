@@ -64,6 +64,9 @@
                                         # with a counter there its perspective setup is sabotaged, black sky and a
                                         # thin slice of picture; 1.2 and 1.3 had it there)
 .set D_SITERA,  0x1B4                   # the pak server's entry from the game's handler: its ra
+.set D_DEFER,   0x3F4                   # the pak stub's deferral flag (hook.c pak_stub_place, scheme 3): an SI
+                                        # completion sent on without its message while the PI was busy; mt_defer
+                                        # runs the block's read again (the boot and the load epilogue zero it)
 # the virtual Controller Pak's control block on the cart (hook.c VPAK_CTL_PI; build.sh
 # passes PAK_CTL, its kseg1 address, and VPAK_KSEG1, the image's): the menu writes it at
 # launch, the hook fills the site words in a service borrow, the server below reads them
@@ -218,6 +221,10 @@ mon_tick:
     lui     $k1, 0xA460
     lw      $k1, 0x0000($k1)            # PI_DRAM_ADDR: still the game's (fetches leave it alone;
     sw      $k1, D_PIDRAM($k0)          # the gate took PI_CART_ADDR); every exit puts both back
+    lw      $k1, D_DEFER($k0)           # a pak block the stub deferred (the PI was busy): with the
+    bnez    $k1, mt_defer               # PI idle now, its read is run again (mt_defer, then back
+    nop                                 # here)
+mt_tick_go:
     lui     $k1, 0xA430
     lw      $k1, 0x0008($k1)            # MI_INTR: what brought us here
     andi    $k1, $k1, 0x000A
@@ -293,14 +300,13 @@ mon_tick:
     lui     $t3, 0xA000
     or      $t2, $t2, $t3
     addiu   $a3, $t2, -0x38
-3:  jal     mt_parse
-    move    $a0, $a3
-    bnez    $v0, 1f
-    nop
-    jal     mt_parse
-    addiu   $a0, $a3, 0x38
-    beqz    $v0, mt_vi                  # no controller data in either block (by name: the hide
-    nop                                 # block below has numeric labels of its own)
+3:  jal     mt_parse                    # the block that ends at SI_DRAM_ADDR: a completed 64-byte
+    move    $a0, $a3                    # transfer leaves the register 0x38 past the start, so this
+    beqz    $v0, mt_vi                  # is the block. (1.5 walked the 64 bytes after it as well,
+    nop                                 # in case: over THPS3's zeros a 1.6 ms walk from the cart,
+                                        # twice a frame while it polled its pak, and the VI ran
+                                        # 2 ms late: the jitter at its boot. By name: the hide
+                                        # block below has numeric labels of its own.)
 1:  sw      $t3, D_PAD($k0)             # the buttons, for the ticks to come
     addiu   $t1, $zero, 1
     sw      $t1, D_PADOK($k0)
@@ -730,6 +736,11 @@ mt_why:
     andi    $t0, $t0, 0x8000
     bnez    $t0, 9f                     # 6: a Compare match pending and enabled (the hook would want it kept)
     nop
+    addiu   $t2, $zero, 7
+    lui     $t0, 0x8000
+    lw      $t0, D_DEFER($t0)
+    bnez    $t0, 9f                     # 7: a pak block deferred (hook.c pak_stub_place): its thread
+    nop                                 #    waits for the read mt_defer runs again; no state of that
     move    $t2, $zero
 9:  jr      $ra
     nop
@@ -741,6 +752,7 @@ mt_why:
 mt_parse:
     move    $t0, $zero
     move    $t1, $zero
+    move    $t2, $zero                  # padding bytes in a row
 3:  sltiu   $a2, $t0, 63
     beqz    $a2, 9f                     # off the end
     addu    $a2, $a0, $t0
@@ -780,13 +792,19 @@ mt_parse:
     addu    $t0, $t0, $v0
     addu    $t0, $t0, $a2
     addiu   $t0, $t0, 2
-    b       3b
+    b       7f
     addiu   $t1, $t1, 1
-4:  b       3b
-    addiu   $t0, $t0, 1
-5:  addiu   $t1, $t1, 1
+4:  addiu   $t2, $t2, 1                 # padding: eight in a row is no block (bytes that are not
+    sltiu   $a2, $t2, 9                 # one cost 1.3 ms from the cart over the 63 of them)
+    beqz    $a2, 9f
+    nop
     b       3b
     addiu   $t0, $t0, 1
+5:  addiu   $t1, $t1, 1                 # a channel skipped or reset
+    addiu   $t0, $t0, 1
+7:  sltiu   $a2, $t1, 6                 # past the PIF's six channels: no block (zeros walked as
+    bnez    $a2, 3b                     # skipped channels cost the same 1.6 ms)
+    move    $t2, $zero
 9:  jr      $ra
     move    $v0, $zero
 
@@ -886,8 +904,10 @@ mt_trig_res:
 # the menu's copy of the pak file) and this code answers from it, run in place. Two ways
 # in: the tick's SI branch (mon_tick, while the game's handler is not patched), and
 # mon_pak_hit, reached from the game's own __osException at its SI acknowledge through
-# a RAM stub at 0x060 (hook.c pak_stub_place: waits for the PI to go idle, since a cart
-# fetch under a game's DMA freezes the console, then comes here) once the service borrow
+# a RAM stub at 0x060 (hook.c pak_stub_place: a cart fetch under a game's DMA freezes
+# the console, so with the PI busy the stub either waits (schemes 1 and 2) or, scheme
+# 3, sends the handler on without its message and flags D_DEFER for mt_defer, which
+# runs the block's read again once the PI is idle; with it idle it comes here) once the service borrow
 # (hook.c pak_borrow, op 6) has found the site and patched it. Dirty blocks go straight
 # to the image on the cart; the mirror to the card is the service borrow's, 90 ticks
 # after the last write.
@@ -914,7 +934,77 @@ mon_pak_hit:
     # place, so ra is the way back; scheme 2 replaced the four words through the jal's
     # delay slot, as the resident trampoline does, and ra is dead). What the server uses
     # is parked in the vector page's scratch and put back.
-    lui     $at, 0x8000
+    # Most entries are the game's controller reads, two an SI poll (the block on its way
+    # to the PIF, then the answer): those leave here, before the parking, on at and a0
+    # alone, when the PIF's control byte is still 1 (the block just went to the PIF) or
+    # the pak's channel is 0 and the first entry's command is 1 (read buttons). 1.5
+    # parked, walked and unparked every one of them from the cart: about 160 us each.
+    lui     $a0, 0xA480
+    lw      $a0, 0x0000($a0)            # SI_DRAM_ADDR: start + 0x38 after a 64-byte transfer
+    lui     $at, 0x0100
+    addiu   $at, $at, -1
+    and     $a0, $a0, $at
+    sltiu   $at, $a0, 0x38
+    bnez    $at, mp_fast                # not a block
+    lui     $at, 0x0080
+    addiu   $at, $at, -0x40
+    sltu    $at, $at, $a0
+    bnez    $at, mp_fast                # beyond 8 MiB - 64: not a block
+    lui     $at, 0xA000
+    or      $a0, $a0, $at
+    addiu   $a0, $a0, -0x38             # a0: the block
+    lbu     $at, 63($a0)
+    bnez    $at, mp_fast                # the PIF has not run it yet
+    lui     $at, %hi(PAK_CTL)
+    lw      $at, %lo(PAK_CTL + PAK_CTL_LIVE)($at)
+    andi    $at, $at, 0x0003
+    bnez    $at, 2f                     # the pak in another channel: the walk decides
+    lbu     $at, 0($a0)                 # (delay slot) the block's first byte
+    # Some games' blocks open with one 0xFF padding byte (Rayman 2's controller reads and
+    # pak requests both): channel 0's entry is at 1 then. a0 may move here, the walk finds
+    # the block again from the register.
+    addiu   $at, $at, 1
+    andi    $at, $at, 0x00FF
+    bnez    $at, 3f
+    nop
+    addiu   $a0, $a0, 1
+3:  lbu     $at, 2($a0)                 # channel 0's command
+    addiu   $at, $at, -1
+    beqz    $at, mp_fast                # 1, read buttons: not a pak command
+    nop
+    # Channel 0's identify (0x00 or 0xFF, tx 1, rx 3) with a controller answering, the pak
+    # in and no change to report is answered here as mp_probe would, a pak present and no
+    # receive error: Rayman 2 asks 150 times a second, and the parking, the walk and the
+    # unparking cost 230 us from the cart against 90 here. (The development counters and
+    # trace miss these; the walk still serves the identify after a change, or with the
+    # pak out. A comment line may not open with a preprocessor word: "# error" is one.)
+    lbu     $at, 2($a0)
+    addiu   $at, $at, 1
+    andi    $at, $at, 0x00FE            # 0x00 and 0xFF both come to 0
+    bnez    $at, 2f                     # not an identify
+    lbu     $at, 0($a0)
+    addiu   $at, $at, -1
+    bnez    $at, 2f                     # tx not 1
+    lbu     $at, 1($a0)
+    andi    $at, $at, 0x00C0            # the PIF's error bits: no controller answered there
+    bnez    $at, 2f
+    lbu     $at, 1($a0)
+    andi    $at, $at, 0x003F
+    addiu   $at, $at, -3
+    bnez    $at, 2f                     # rx not 3
+    lui     $at, %hi(PAK_CTL)
+    lw      $at, %lo(PAK_CTL + PAK_CTL_LIVE)($at)
+    andi    $at, $at, 0x0033            # the channel, in, a change to report
+    xori    $at, $at, 0x0010
+    bnez    $at, 2f                     # out, a change to report, or another channel: the walk
+    addiu   $at, $zero, 3
+    sb      $at, 1($a0)                 # rx 3, no error
+    lbu     $at, 5($a0)
+    ori     $at, $at, 0x0001            # a pak present ...
+    andi    $at, $at, 0x00FD            # ... not pulled
+    b       mp_fast
+    sb      $at, 5($a0)
+2:  lui     $at, 0x8000
     sd      $k0, (SCRATCH + 0x00)($at)
     sd      $k1, (SCRATCH + 0x08)($at)
     sd      $v0, (SCRATCH + 0x10)($at)
@@ -942,7 +1032,8 @@ mon_pak_hit:
     or      $a0, $t2, $t3
     jal     mp_serve
     addiu   $a0, $a0, -0x38
-1:  lui     $at, 0x8000
+1:
+    lui     $at, 0x8000
     ld      $k0, (SCRATCH + 0x00)($at)
     ld      $k1, (SCRATCH + 0x08)($at)
     ld      $v0, (SCRATCH + 0x10)($at)
@@ -957,6 +1048,7 @@ mon_pak_hit:
     # the words the site lost, all harmless to repeat: the acknowledge, the SI bit out
     # of the handler's pending word, rX as the acknowledge left it (t0 or t1, from the
     # control block; at is set last, dead either way)
+mp_fast:
     lui     $a0, 0xa480
     sw      $zero, 0x0018($a0)          # SI_STATUS = 0
     andi    $s1, $s1, 0x003d
@@ -1010,7 +1102,9 @@ mon_pak_hit:
 # byte); only the second is served, the first would be overwritten by the answer anyway
 # (and cost the same). Clobbers at, a0-a3, t0-t3, v0, k0, k1 and ra (kept in D_DIAG0,
 # 0x1A8: a borrow's word, free while the game runs). From the cart a read costs about
-# half a millisecond, a write about the same plus the ROM-write round trips.
+# a quarter of a millisecond with the walk (nine cart reads and the copy; the block's
+# CRC comes from the table at VPAK_CRC), a write about a millisecond (its CRC loop,
+# the ROM-write round trips).
 mp_serve:
     lui     $k0, 0x8000
     sw      $ra, D_DIAG0($k0)
@@ -1105,7 +1199,7 @@ mp_probe:                               # identify: a pak is present (in); "pak 
     move    $a2, $zero
     b       mp_done
     nop
-mp_read:                                # 32 bytes of the image and their CRC
+mp_read:                                # 32 bytes of the image and their CRC, from the table
     andi    $at, $t3, 0x10
     beqz    $at, mp_done                # removed: the real slot's answer stands
     addiu   $a2, $zero, 3
@@ -1119,64 +1213,70 @@ mp_read:                                # 32 bytes of the image and their CRC
     sll     $v0, $v0, 8
     or      $v0, $v0, $a2
     srl     $v0, $v0, 5                 # the block (0..1023 the image, 1024+ the bank area)
-    addiu   $a2, $a1, 5                 # a2: where the bytes go
-    move    $a3, $zero                  # a3: the CRC
-    lui     $t3, %hi(mp_crc_tab)
-    addiu   $t3, $t3, %lo(mp_crc_tab)   # t3: the CRC table (crc = T[crc ^ byte], a word each)
     sltiu   $t1, $v0, 1024
     beqz    $t1, 3f
-    addiu   $t1, $zero, 8               # t1: words left
-    sll     $v0, $v0, 5
+    addiu   $a2, $a1, 5                 # a2: where the bytes go (any alignment: swl/swr pairs)
+    # the block's eight words straight from the image and its CRC from the table (the
+    # menu computed the table at launch, mp_write keeps it): nine cart reads and no
+    # byte loop, where 1.5 ran 32 table lookups from the cart at 200 cycles an
+    # instruction (about 0.9 ms a read, and Perfect Dark's boot reads the whole pak:
+    # its VI interrupts came up to 2.8 ms late, past the hi-res vblank, so the
+    # picture jittered; the development build's VI latency histogram showed it)
+    sll     $t1, $v0, 5
     lui     $k1, %hi(VPAK_KSEG1)
     addiu   $k1, $k1, %lo(VPAK_KSEG1)
-    addu    $k1, $k1, $v0               # k1: the block in the image
-2:  lw      $k0, 0($k1)
-    addiu   $k1, $k1, 4
-    srl     $at, $k0, 24
-    sb      $at, 0($a2)
-    xor     $a3, $a3, $at
-    sll     $a3, $a3, 2
-    addu    $a3, $a3, $t3
-    lw      $a3, 0($a3)
-    srl     $at, $k0, 16
-    andi    $at, $at, 0xFF
-    sb      $at, 1($a2)
-    xor     $a3, $a3, $at
-    sll     $a3, $a3, 2
-    addu    $a3, $a3, $t3
-    lw      $a3, 0($a3)
-    srl     $at, $k0, 8
-    andi    $at, $at, 0xFF
-    sb      $at, 2($a2)
-    xor     $a3, $a3, $at
-    sll     $a3, $a3, 2
-    addu    $a3, $a3, $t3
-    lw      $a3, 0($a3)
-    andi    $at, $k0, 0xFF
-    sb      $at, 3($a2)
-    xor     $a3, $a3, $at
-    sll     $a3, $a3, 2
-    addu    $a3, $a3, $t3
-    lw      $a3, 0($a3)
-    addiu   $t1, $t1, -1
-    bnez    $t1, 2b
-    addiu   $a2, $a2, 4
+    addu    $k1, $k1, $t1               # k1: the block in the image
+    sll     $t1, $v0, 2
+    lui     $a3, %hi(VPAK_CRC)
+    addiu   $a3, $a3, %lo(VPAK_CRC)
+    addu    $a3, $a3, $t1
+    lw      $a3, 0($a3)                 # a3: the block's CRC
+    lw      $k0, 0($k1)
+    swl     $k0, 0($a2)
+    swr     $k0, 3($a2)
+    lw      $k0, 4($k1)
+    swl     $k0, 4($a2)
+    swr     $k0, 7($a2)
+    lw      $k0, 8($k1)
+    swl     $k0, 8($a2)
+    swr     $k0, 11($a2)
+    lw      $k0, 12($k1)
+    swl     $k0, 12($a2)
+    swr     $k0, 15($a2)
+    lw      $k0, 16($k1)
+    swl     $k0, 16($a2)
+    swr     $k0, 19($a2)
+    lw      $k0, 20($k1)
+    swl     $k0, 20($a2)
+    swr     $k0, 23($a2)
+    lw      $k0, 24($k1)
+    swl     $k0, 24($a2)
+    swr     $k0, 27($a2)
+    lw      $k0, 28($k1)
+    swl     $k0, 28($a2)
+    swr     $k0, 31($a2)
     sb      $a3, 37($a1)                # the CRC after the data
     DEVTRACE 2
     DEVCOUNT 0xBFFE1F44
     b       mp_done
     nop
-3:  move    $at, $zero                  # the bank area: zeros, as a Controller Pak answers
-    addiu   $t1, $zero, 32
-4:  sb      $at, 0($a2)
-    xor     $a3, $a3, $at
-    sll     $a3, $a3, 2
-    addu    $a3, $a3, $t3
-    lw      $a3, 0($a3)
-    addiu   $t1, $t1, -1
-    bnez    $t1, 4b
-    addiu   $a2, $a2, 1
-    sb      $a3, 37($a1)
+3:  swl     $zero, 0($a2)               # the bank area: zeros, as a Controller Pak answers
+    swr     $zero, 3($a2)               # (and their CRC is zero)
+    swl     $zero, 4($a2)
+    swr     $zero, 7($a2)
+    swl     $zero, 8($a2)
+    swr     $zero, 11($a2)
+    swl     $zero, 12($a2)
+    swr     $zero, 15($a2)
+    swl     $zero, 16($a2)
+    swr     $zero, 19($a2)
+    swl     $zero, 20($a2)
+    swr     $zero, 23($a2)
+    swl     $zero, 24($a2)
+    swr     $zero, 27($a2)
+    swl     $zero, 28($a2)
+    swr     $zero, 31($a2)
+    sb      $zero, 37($a1)
     DEVTRACE 2
     DEVCOUNT 0xBFFE1F44
     b       mp_done
@@ -1240,6 +1340,18 @@ mp_write:                               # 32 bytes into the image, the CRC back
     addiu   $v0, $v0, -1
     bnez    $v0, 2b
     addiu   $a2, $a2, 4
+    # the block's CRC (in the reply already) into the table, for mp_read: the block
+    # from where the words ended (a3 = the image's block + 32)
+    lui     $a0, %hi(VPAK_KSEG1)
+    addiu   $a0, $a0, %lo(VPAK_KSEG1)
+    subu    $a1, $a3, $a0
+    addiu   $a1, $a1, -32
+    srl     $a1, $a1, 3                 # the block * 4
+    lui     $a0, %hi(VPAK_CRC)
+    addiu   $a0, $a0, %lo(VPAK_CRC)
+    addu    $a0, $a0, $a1
+    lbu     $a1, 37($t3)
+    CALL    LP_PIO_W
     b       4f
     nop
 3:  b       5f                          # the bank area: nothing to keep, no dirty stamp
@@ -1327,6 +1439,7 @@ mon_epi_load:
     sw      $zero, D_HOLD_M($k0)        # loaded again every twelve ticks: DK64)
     sw      $zero, D_PAD($k0)
     sw      $zero, D_PADOK($k0)
+    sw      $zero, D_DEFER($k0)         # (no state is taken with a deferral pending: mt_why 7)
     addiu   $t1, $zero, -1
     sw      $t1, D_RESUMED($k0)         # a suspended state is loaded once: no try after a load
     # the context, as state_resume would load it
@@ -1384,6 +1497,33 @@ mon_epi_load:
 
 # CONFIG_SET(ROM_WRITE_ENABLE = a2): DATA0 = the config id (1), DATA1 = the value,
 # the command byte 'C', then wait for the MCU (SR bit 31). ra kept in a3.
+# ---- a deferred pak block (hook.c pak_stub_place, scheme 3): the stub found the PI busy
+# at an SI completion and sent the handler on without its message, flagging D_DEFER.
+# From mon_tick with the PI idle (the gate admits PI interrupts for this: the DMA's end
+# brings it here at once): the SI's 64-byte read of the PIF RAM into the same block is
+# run again. Its completion takes the handler back to the stub with the block as it was
+# (the PIF still holds that answer: libultra's SI access is held by the waiting pak
+# thread, so nothing else used the SI), and the server runs, or the stub defers again.
+mt_defer:
+    SAVE_REGS
+    lui     $t0, 0xA480
+    lw      $t1, 0x0018($t0)            # SI_STATUS
+    andi    $t1, $t1, 0x0003
+    bnez    $t1, 1f                     # a transfer in flight (none expected): next time
+    lw      $t1, 0x0000($t0)            # (delay slot) SI_DRAM_ADDR: the block + 0x38 after 64 bytes
+    lui     $t2, 0x0100
+    addiu   $t2, $t2, -1
+    and     $t1, $t1, $t2
+    addiu   $t1, $t1, -0x38
+    sw      $t1, 0x0000($t0)            # SI_DRAM_ADDR = the block
+    lui     $t1, 0x1FC0
+    ori     $t1, $t1, 0x07C0
+    sw      $t1, 0x0004($t0)            # SI_PIF_ADDR_RD64B: the read starts
+    lui     $k0, 0x8000
+    sw      $zero, D_DEFER($k0)
+1:  LOAD_REGS
+    b       mt_tick_go
+    nop
 mon_cfg_rw:
     move    $a3, $ra
     PIOW    0xBFFF0004, 0x00000001

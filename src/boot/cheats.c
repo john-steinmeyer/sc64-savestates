@@ -727,7 +727,8 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     if (borrow && (SC64SS_BISECT != 1)) {
         // SC64SS borrowed mode: the helper, the pre-install check and the eret exit
         // stubs into place (EXIT itself comes with the cart installer: 0x1DC once the
-        // gate is in), the monitor's data words (0x190..0x1D8) zeroed
+        // gate is in), the monitor's data words (0x190..0x1D8) and the pak stub's deferral
+        // flag (0x3F4) zeroed
         patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_130), SC64SS_LOWPAGE_130_ADDRESS, sc64ss_lowpage_130_words);
         patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_1dc), SC64SS_LOWPAGE_1DC_ADDRESS, sc64ss_lowpage_1dc_words);
         patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_0f0), SC64SS_LOWPAGE_0F0_ADDRESS, sc64ss_lowpage_0f0_words);
@@ -736,6 +737,7 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
         for (uint32_t i = 0; i < 18; i++) {
             *patcher_p++ = I_SW(REG_ZERO, 0x190 + 4 * i, REG_K0);
         }
+        *patcher_p++ = I_SW(REG_ZERO, 0x3F4, REG_K0);
     }
 
     if (libdragon) {

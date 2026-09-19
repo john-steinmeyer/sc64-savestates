@@ -7,8 +7,10 @@
 #   0x010..0x060  the monitor's register scratch (10 x 64-bit: t0-t3, a0-a3, v0, ra);
 #                 transient, so it may overlap a game's own exception scratch (Factor 5's
 #                 handlers spill v0/ra/t0-t7 to 0x020..0x070: Indiana Jones)
-#   0x060..0x080  the virtual pak's stub (hook.c pak_stub_place, 8 words: wait for the PI,
-#                 then to monitor.S mon_pak_hit) while the pak serves in borrowed mode;
+#   0x060..0x080  the virtual pak's stub (hook.c pak_stub_place, 8 words: with the PI idle to
+#                 monitor.S mon_pak_hit through 0x118 and a cart trampoline, with it busy back
+#                 to the handler past its send, the SI interrupt left pending) while the pak
+#                 serves in borrowed mode;
 #                 nothing else (EXIT once lived here: Indiana Jones' page-in
 #                 handler wrote its t6/t7 over it and the first tick's way out ran them;
 #                 the game's Count/Compare across a borrow moved to the context on the
@@ -20,7 +22,8 @@
 #                 cache-error vector, 0x100): the load epilogue's eret, same restore first
 #   0x118..0x120  the pre-install check's tail (see 0x1DC): an interrupt goes on to the
 #                 cart installer through 0x178 (jr k0), anything else falls into the
-#                 game's vector words at 0x120
+#                 game's vector words at 0x120; dead once the gate is in, and then the pak
+#                 stub's idle path (jr at / nop, hook.c pak_stub_place)
 #   0x130..0x180  PIO_W: a cart register write that waits until the write has landed
 #                 (0x178: jr k0 / nop, the way to the cart installer)
 #   0x190..0x1D8  data: +0 GUARD (a borrow is in progress), +4 REQ (the action asked
@@ -44,6 +47,8 @@
 #   0x360..0x3F0  GATE (the engine's tail lands here on every exception) + DMA_PRIM
 #   0x3F0         SIAGE (monitor.S: ticks since an SI completion last gave the buttons;
 #                 the 312-ROM scan found no game using 0x3F0..0x3FF)
+#   0x3F4         DEFER (the pak stub's deferral flag, hook.c pak_stub_place: the boot patcher
+#                 zeroes it, the monitor's mt_defer consumes it)
 #
 # Why the exits are here too: code fetched from the cart is PIO, and every PIO access
 # lands in PI_CART_ADDR (measured: after a borrow the hook found the trigger's last
@@ -82,7 +87,8 @@ lp_gate:
     bnez    $k1, GAME_TAIL
     lui     $k1, 0xA430
     lw      $k1, 0x0008($k1)            # MI_INTR
-    andi    $k1, $k1, 0x002B            # the VI, an SI transfer done, the RSP or the RDP done?
+    andi    $k1, $k1, 0x003B            # the VI, an SI transfer done, the RSP or the RDP done, or the
+                                        # PI (a DMA's end: a deferred pak block, monitor.S mt_defer)?
     beqz    $k1, GAME_TAIL
     lui     $k1, 0xA460
     lw      $k0, 0x0010($k1)            # PI_STATUS

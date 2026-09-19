@@ -52,6 +52,7 @@ MON_PI=$(hc MONITOR_PI); STASH_PI=$(hc STASH_PI); STAGING_PI=$(hc HOOK_STAGING_P
 VPAK_PI=$(hc VPAK_PI); VPAK_CTL_PI=$(hc VPAK_CTL_PI)
 CTX_KSEG1=$(( 0xA0000000 + CTX_PI ))
 VPAK_KSEG1=$(( 0xA0000000 + VPAK_PI ))    # the pak image, read in place by the monitor's server
+VPAK_CRC=$(( 0xA0000000 + $(hc VPAK_CRC_PI) ))   # its block CRC table (the menu computes it at launch)
 PAK_CTL=$(( 0xA0000000 + VPAK_CTL_PI ))   # its control block (state, dirty stamp, the site words)
 MON_BASE=$(( 0xA0000000 + MON_PI ))
 MON_TICK=$(( MON_BASE + 0x100 ))
@@ -78,7 +79,7 @@ $CC $CFLAGS -nostartfiles -Wl,-T,monitor.ld -Wl,--defsym,MON_BASE=$MON_BASE -Wl,
     -Wl,--defsym,LP_DMA=$LP_DMA -Wl,--defsym,LP_PIO_W=$LP_PIO_W \
     -Wl,--defsym,LP_EXIT=$LP_EXIT -Wl,--defsym,LP_EXIT_ERET=$LP_EXIT_ERET \
     -Wl,--defsym,CTX_KSEG1=$CTX_KSEG1 -Wl,--defsym,VPAK_KSEG1=$VPAK_KSEG1 -Wl,--defsym,PAK_CTL=$PAK_CTL \
-    -o monitor.elf monitor.o
+    -Wl,--defsym,VPAK_CRC=$VPAK_CRC -o monitor.elf monitor.o
 MON_TICK_AT=$(mips64-elf-nm monitor.elf | awk '$3=="mon_tick"{print "0x"$1}')
 [ "$(( MON_TICK_AT ))" -eq "$MON_TICK" ] || { echo "ERROR: mon_tick at $MON_TICK_AT, expected $(printf 0x%x $MON_TICK)" >&2; exit 1; }
 MON_PAK_AT=$(mips64-elf-nm monitor.elf | awk '$3=="mon_pak_hit"{print "0x"$1}')
@@ -100,7 +101,7 @@ echo "borrowed mode: monitor $(fsz monitor.bin) bytes at $(printf 0x%08x $MON_PI
 # own code lives at 0x000..0x07F (GoldenEye keeps its TLB refill handler there); the menu
 # picks it by title (load_rom.c). Same code, other immediates: the sizes must agree.
 $CC $CFLAGS -Wa,--defsym,SCRATCH=0x2A8 -c monitor.S -o monitor_hi.o
-$CC $CFLAGS -nostartfiles -Wl,-T,monitor.ld -Wl,--defsym,MON_BASE=$MON_BASE -Wl,--defsym,CFG_ADDR=$CFG_ADDR -Wl,--defsym,HOOK_LEN1=$HOOK_LEN1 -Wl,--defsym,STAGING_PI=$STAGING_PI -Wl,--defsym,STASH_PI=$STASH_PI -Wl,--defsym,LP_DMA=$LP_DMA -Wl,--defsym,LP_PIO_W=$LP_PIO_W -Wl,--defsym,LP_EXIT=$LP_EXIT -Wl,--defsym,LP_EXIT_ERET=$LP_EXIT_ERET -Wl,--defsym,CTX_KSEG1=$CTX_KSEG1 -Wl,--defsym,VPAK_KSEG1=$VPAK_KSEG1 -Wl,--defsym,PAK_CTL=$PAK_CTL -o monitor_hi.elf monitor_hi.o
+$CC $CFLAGS -nostartfiles -Wl,-T,monitor.ld -Wl,--defsym,MON_BASE=$MON_BASE -Wl,--defsym,CFG_ADDR=$CFG_ADDR -Wl,--defsym,HOOK_LEN1=$HOOK_LEN1 -Wl,--defsym,STAGING_PI=$STAGING_PI -Wl,--defsym,STASH_PI=$STASH_PI -Wl,--defsym,LP_DMA=$LP_DMA -Wl,--defsym,LP_PIO_W=$LP_PIO_W -Wl,--defsym,LP_EXIT=$LP_EXIT -Wl,--defsym,LP_EXIT_ERET=$LP_EXIT_ERET -Wl,--defsym,CTX_KSEG1=$CTX_KSEG1 -Wl,--defsym,VPAK_KSEG1=$VPAK_KSEG1 -Wl,--defsym,PAK_CTL=$PAK_CTL -Wl,--defsym,VPAK_CRC=$VPAK_CRC -o monitor_hi.elf monitor_hi.o
 $OBJCOPY -O binary monitor_hi.elf monitor_hi.bin
 [ "$(fsz monitor_hi.bin)" -eq "$(fsz monitor.bin)" ] || { echo "ERROR: monitor_hi.bin ($(fsz monitor_hi.bin) bytes) differs in size from monitor.bin" >&2; exit 1; }
 
@@ -150,6 +151,7 @@ layout = [("SC64SS_HOOK_STAGING_PI", const("HOOK_STAGING_PI"), "cart PI address 
           ("SC64SS_SLOTS_MAX", const("CFG_SLOTS_MAX"), "slot table capacity"),
           ("SC64SS_VPAK_PI", const("VPAK_PI"), "cart PI address of the virtual Controller Pak image (run table after it)"),
           ("SC64SS_VPAK_LEN", const("VPAK_LEN"), "its size"),
+          ("SC64SS_VPAK_CRC_PI", const("VPAK_CRC_PI"), "the pak's block CRC table (a word a block; the menu computes it at launch)"),
           ("SC64SS_VPAK_CTL_PI", const("VPAK_CTL_PI"), "borrowed mode: the pak's control block (the menu zeroes it, 'VPK1' first)"),
           ("SC64SS_MONITOR_PI", const("MONITOR_PI"), "borrowed mode: cart PI address of the monitor (run in place)"),
           ("SC64SS_MONITOR_LEN", const("MONITOR_LEN"), "its reserved size"),

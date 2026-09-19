@@ -6,7 +6,7 @@
 
 #define SC64SS_HOOK_ADDRESS (0x807D0000UL)
 #define SC64SS_HOOK_DEV (0)
-#define SC64SS_HOOK_CFG_OFFSET (0x1B5E0UL)   /* struct hook_cfg inside the blob */
+#define SC64SS_HOOK_CFG_OFFSET (0x1B700UL)   /* struct hook_cfg inside the blob */
 #define SC64SS_HOOK_CFG_MAGIC (0x43464731UL)
 #define SC64SS_HOOK_CFG_WORDS (48)
 
@@ -25,6 +25,7 @@
 #define SC64SS_SLOTS_MAX (0x8UL)   /* slot table capacity */
 #define SC64SS_VPAK_PI (0x13FB0000UL)   /* cart PI address of the virtual Controller Pak image (run table after it) */
 #define SC64SS_VPAK_LEN (0x8000UL)   /* its size */
+#define SC64SS_VPAK_CRC_PI (0x13FA3000UL)   /* the pak's block CRC table (a word a block; the menu computes it at launch) */
 #define SC64SS_VPAK_CTL_PI (0x13FB9000UL)   /* borrowed mode: the pak's control block (the menu zeroes it, 'VPK1' first) */
 #define SC64SS_MONITOR_PI (0x13FBA000UL)   /* borrowed mode: cart PI address of the monitor (run in place) */
 #define SC64SS_MONITOR_LEN (0x4000UL)   /* its reserved size */

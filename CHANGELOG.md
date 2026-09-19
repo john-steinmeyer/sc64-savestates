@@ -1,5 +1,28 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.6 (2026-09-19)
+
+- The vertical jitter with the virtual pak on is fixed: Tony Hawk's Pro Skater 3 at its
+  boot and in its menus, Perfect Dark at its logos, in their high-resolution modes.
+  With Slow motion off the routine runs from the cartridge, slowly, and three things
+  it did around a pak transaction held the console's interrupts too long there, so the
+  game's video interrupt came up to 3 ms late, past the vertical blank of a high-
+  resolution mode: a walk over the memory after the game's controller block, looking
+  for buttons that were not there; the checksum of every pak read, computed a byte at
+  a time; and a wait for the game's own cartridge transfer to end before the read could
+  be answered. The walk is gone, the checksums come from a table the menu prepares
+  when it loads the pak, and the wait is a hand-off: the transfer's end brings the
+  read back. A pak presence check, which some games make a hundred times a second, is
+  answered without the rest of the machinery. Reads are cheap now, so the logos and the
+  menus hold still. A write to the pak still costs the routine about a millisecond from
+  the cartridge, so a game that writes to its pak as it starts keeps a mild jitter for a
+  second or two there and nowhere else: THPS3 tests the pak with fifty writes at its
+  legal screens, Perfect Dark touches its save at its logos. With the virtual pak off
+  for the game that goes too. THPS3 adds one late frame of its own at its pak check, by
+  switching interrupts off there.
+- Tony Hawk's Pro Skater 3 refuses Slow motion, as the other games that use all of the
+  Expansion Pak do: its high-resolution mode did not boot with it on.
+
 ## 0.3.4-ss1.5 (2026-09-19)
 
 - The freeze after a load is fixed. Since 1.2 a state could be saved while the RDP was

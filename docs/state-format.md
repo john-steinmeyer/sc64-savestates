@@ -19,7 +19,7 @@ writer of a later version keeps to them so that files made today stay loadable.
 | 0x3E00 | 512 | a zeroed sector (see "Writing") |
 | 0x4000 | `image_len` | the RAM image, from address 0x80000000 |
 
-A state written by this build (0.3.4-ss1.5, hook version 13; version 11 and 12 states have the same shape) has `image_len`
+A state written by this build (0.3.4-ss1.6, hook version 13 as in 1.5; version 11 and 12 states have the same shape) has `image_len`
 = 0x800000: all 8 MiB of RAM (the 128 KiB the routine borrows come from its stash,
 so the image holds the game's bytes), followed at 0x804000 by the RSP's memories
 (region kind 1, below), so the file's used length is 0x806000 bytes, which is also
