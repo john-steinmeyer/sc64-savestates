@@ -171,12 +171,16 @@ void boot (boot_params_t *params) {
     cpu_io_write(&VI->V_INTR, 0x3FF); /*< Vertical Interrupt. */
     cpu_io_write(&VI->H_LIMITS, 0); /*< Horizontal Limits. */
     cpu_io_write(&VI->CURR_LINE, 0); /*< Current Scanline. */
-    // SC64SS: not for a ROM with libdragon's boot code. Its video setup is applied from the
-    // vblank interrupt unless the VI is off, and with the VI left on and every timing zeroed
-    // that interrupt never comes: FlappyBird stayed a blank screen. Those ROMs keep the three
-    // writes above (the behaviour every libdragon title was tested with); the rest get the
-    // full reset, which stops crashes in Ocarina of Time.
+    // SC64SS: not for a ROM with libdragon's boot code. libdragon's display setup (the stable
+    // branch, and the preview branch before its VI rewrite) waits for a vblank when it finds
+    // the VI switched on, and with every timing zeroed that vblank never comes: FlappyBird
+    // stayed a blank screen. Those ROMs keep the three writes above (the behaviour every
+    // libdragon title was tested with); the rest get the full reset, which stops crashes in
+    // Ocarina of Time, with the VI switched off first, as it is at power-on: a libdragon ROM
+    // with Nintendo's boot code (the stable branch before it shipped its own) gets the full
+    // reset too, and with the VI off its display setup does not wait.
     if (!libdragon) {
+    cpu_io_write(&VI->CR, 0); /**< Control: the VI off (SC64SS). */
     cpu_io_write(&VI->MADDR, 0); /**< Memory Address. */
     cpu_io_write(&VI->H_WIDTH, 0); /**< Horizontal Width. */
     cpu_io_write(&VI->TIMING, 0); /**< Timings. */
