@@ -4,7 +4,8 @@ A fork of [N64FlashcartMenu](https://github.com/Polprzewodnikowy/N64FlashcartMen
 Polprzewodnikowy (AGPL-3.0) with save states, a virtual Controller Pak, slow motion,
 screenshots and configurable hotkeys for the SummerCart64. Everything the stock menu
 does, it still does. Problems with the additions belong in this repository's issues,
-not upstream's.
+not upstream's, with the first line of the Menu information screen (Start, then Menu
+information) in the report.
 
 [![Save states on original N64 hardware with the SummerCart64: the 1.2 video](docs/media/video.jpg)](https://www.youtube.com/watch?v=ZGR4FXc2xOI)
 
@@ -12,11 +13,11 @@ not upstream's.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
-New in 1.4: ROM autoload is back, a game the console boots straight into, with the menu
-a held Start away; a fix for Banjo-Kazooie, which booted with a black sky since 1.2; and
-the video reset switches the VI off, so libdragon homebrew with Nintendo's boot code
-boots. 1.3 brought the pak transfers and the live port list. The [changelog](CHANGELOG.md)
-has the details.
+New in 1.5: the freeze after a load, which 1.2 to 1.4 could hit, is fixed, and the states
+those builds saved load as well; the Menu information screen names this release and
+repository. 1.4 brought ROM autoload back, a fix for Banjo-Kazooie and the video reset
+with the VI off; 1.3 the pak transfers and the live port list. The
+[changelog](CHANGELOG.md) has the details.
 
 What it adds:
 

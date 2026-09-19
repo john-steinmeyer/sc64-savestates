@@ -84,6 +84,9 @@
                                         # 0x10 inserted, 0x20 "pak changed" to report on the channel's next identify
 .set CTX_CLOCK,      0x220              # after the context: the game's Count and Compare across a borrow
 
+# The monitor may touch these registers only (and k0/k1, the kernel's): the game's other
+# registers are live under it. A tick that used t4 (and a heartbeat that used t5..t8)
+# clobbered Wave Race 64 at random ticks: threads lost messages, its RSP task spun.
 .macro SAVE_REGS
     lui     $k0, 0x8000
     sd      $t0, (SCRATCH + 0x00)($k0)
@@ -624,7 +627,8 @@ mt_out:
 
 # A borrow can only start at a moment a state can be taken from: one RCP interrupt
 # pending (the VI's, or the RSP's or the RDP's done), the RSP halted with no DMA, the
-# RDP idle, the SI idle (the PI is idle already, the gate checked). Frozen inside one
+# RDP idle (its pipe too, for the first 90 ticks: see mt_why), the SI idle (the PI is idle
+# already, the gate checked). Frozen inside one
 # interrupt the hook could never wait such a moment out, as the resident one does; so
 # an armed borrow (a hold counter at 0x10000 + the VI ticks since the combo was held
 # long enough) takes the first entry that will do: the VI's own for the first 30
@@ -655,6 +659,7 @@ mt_armed:
     sw      $t1, 0($t0)
 5:  andi    $t1, $t1, 0x07FF            # the ticks armed (bit 11 the screenshot op, 12 the resume,
                                         # 13 the pak op, 14 and 15 the PC flags: all outside the mask)
+    sltiu   $a3, $t1, 90                # a3: the RDP's pipe flag counts (mt_why), the first 90 ticks
     sltiu   $t2, $t1, 120
     beqz    $t2, 4f                     # two seconds without a clean moment: dropped
     sltiu   $t2, $t1, 30
@@ -705,10 +710,14 @@ mt_why:
     addiu   $t2, $zero, 4
     lui     $t0, 0xA410
     lw      $t1, 0x000C($t0)            # DPC_STATUS
-    andi    $t1, $t1, 0x0140            # command, DMA busy (pipe busy alone stays up until a
-    bnez    $t1, 9f                     # 4: the RDP is busy   full sync, which a libdragon game never sends)
-    nop
-    addiu   $t2, $zero, 5
+    andi    $t0, $t1, 0x0140            # command, DMA busy
+    bnez    $t0, 9f                     # 4: the RDP is busy
+    andi    $t1, $t1, 0x0020            # (delay slot) the pipe: up until the list's full sync retires,
+    beqz    $a3, 5f                     # whose interrupt the saved world then waits for (Wave Race 64
+    nop                                 # froze on such loads); let go after 90 ticks armed (a3 = 0: a
+    bnez    $t1, 9f                     # game that never sends one keeps the flag up; libdragon's run
+    nop                                 # resident, none of them comes here)
+5:  addiu   $t2, $zero, 5
     lui     $t0, 0xA480
     lw      $t1, 0x0018($t0)            # SI_STATUS
     andi    $t1, $t1, 0x0003

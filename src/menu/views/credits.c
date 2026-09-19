@@ -1,6 +1,12 @@
 #include "views.h"
 #include "../sound.h"
 
+#ifndef SC64SS_RELEASE
+#define SC64SS_RELEASE "?"          /* the save states release (the Makefile takes it from MENU_VERSION) */
+#endif
+#ifndef SC64SS_BASE
+#define SC64SS_BASE "?"             /* the N64FlashcartMenu version it is built on */
+#endif
 #ifndef MENU_VERSION
 #define MENU_VERSION "Unknown"
 #endif
@@ -44,12 +50,13 @@ static void draw (menu_t *menu, surface_t *d) {
         STL_DEFAULT,
         ALIGN_LEFT, VALIGN_TOP,
         "\n"
-        "\n"
-        "Menu version: \t%s\n"
+        "Save states %s, a fork of N64FlashcartMenu %s\n"
+        "\thttps://github.com/john-steinmeyer/sc64-savestates\n"
+        "\t(issues with save states go there, with this line)\n"
         "Build timestamp:  %s\n"
         "libdragon SDK: \t%s%s (%s, %.7s)\n"
         "\n"
-        "Get the latest menu version:\n"
+        "Base menu, latest version:\n"
         "\thttps://github.com/Polprzewodnikowy/N64FlashcartMenu\n"
         "\n"
         "Authors:\n"
@@ -59,7 +66,7 @@ static void draw (menu_t *menu, surface_t *d) {
         "\tThank you to ALL project contributors,\n"
         "\tno matter how small the commit.\n"
         "\n\nThis menu is licensed under the AGPL-3.0 License.\n",
-        MENU_VERSION,
+        SC64SS_RELEASE, SC64SS_BASE,
         BUILD_TIMESTAMP,
         sdk_version.branch, sdk_version.dirty ? "*" : "",
         sdk_version.commit_date,

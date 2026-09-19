@@ -480,7 +480,7 @@ handler too; the game has no Controller Pak use).
 | Paper Mario | works |  |
 | Paperboy | works |  |
 | Penny Racers | works |  |
-| Perfect Dark | works |  |
+| Perfect Dark | works | brief vertical jitter at the start with the virtual pak on, none in play (the pak's service inside the vblank; a fix is planned) |
 | PGA European Tour | works |  |
 | Pilotwings 64 | works |  |
 | Pokemon Puzzle League | works |  |
@@ -551,7 +551,7 @@ handler too; the game has no Controller Pak use).
 | Tonic Trouble | works |  |
 | Tony Hawk's Pro Skater | works |  |
 | Tony Hawk's Pro Skater 2 | works |  |
-| Tony Hawk's Pro Skater 3 | works |  |
+| Tony Hawk's Pro Skater 3 | works | with Slow motion on, its high-resolution mode does not boot; keep Slow motion off for it. Vertical jitter in its menus with the virtual pak on, none in play (the pak's service inside the vblank; a fix is planned) |
 | Top Gear Hyper-Bike | works |  |
 | Top Gear Overdrive | works |  |
 | Top Gear Rally 2 | works |  |
@@ -570,7 +570,7 @@ handler too; the game has no Controller Pak use).
 | VNES64 + Test Cart | works |  |
 | Waialae Country Club: True Golf Classics | works |  |
 | War Gods | works |  |
-| Wave Race 64 | works | a load can freeze it now and then (a state saved with the RDP mid-frame; see the changelog); fix coming |
+| Wave Race 64 | works |  |
 | Wayne Gretzky's 3D Hockey | works |  |
 | Wayne Gretzky's 3D Hockey 98 | works |  |
 | WCW Backstage Assault | does not work | black screen at boot with the engine in place |

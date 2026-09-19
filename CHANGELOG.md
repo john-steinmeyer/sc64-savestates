@@ -1,5 +1,21 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.5 (2026-09-19)
+
+- The freeze after a load is fixed. Since 1.2 a state could be saved while the RDP was
+  still finishing the frame: the test that picks the save moment had stopped counting
+  the RDP's pipe flag, a change made for libdragon homebrew, whose frames never clear
+  it, but applied to every game. In such a state the frame's final interrupt was still
+  owed to the game, and a load never delivered it, so the game waited forever: Wave
+  Race 64 on about one load in three, Banjo-Kazooie on one in five. The flag counts
+  again for games that clear it, so the moment comes once the frame is done, as in
+  1.1; libdragon games are unchanged. States saved by 1.2 to 1.4 at such a moment load
+  as well: the load runs the frame's closing command itself and the interrupt arrives.
+  The files do not change; hook version 13 marks the states written with the new rule.
+- The Menu information screen (Start, then Menu information) opens with the save
+  states release, this repository and the base menu's version, so a report can quote
+  the line; the build timestamp below it pins the build.
+
 ## 0.3.4-ss1.4 (2026-09-18)
 
 - ROM autoload is back. In a ROM's information screen, R, then "Set ROM to autoload",

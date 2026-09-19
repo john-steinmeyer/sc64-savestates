@@ -91,7 +91,7 @@ typedef volatile uint16_t vu16;
 #define KEY_UNLOCK_1    0x5F554E4Cu
 #define KEY_UNLOCK_2    0x4F434B5Fu
 
-#define HOOK_VERSION    12u /* in every state header: 12 = a moment the hold drained (reraise_sp: RR_HOLD, the lines that came pending in bits 0/1, RR_RSP_RUN = the RSP runs on from its status wait); 11 = the RSP's scalar registers (rsp_gpr: a libdragon game's queue sleeps with its place in them); 10 = the RSP's memories and PC as region 1; 9 = the RDP's command pointers and SP_PC (rcp[]); 8 = format v2 (header first); 7 = PI/SI address
+#define HOOK_VERSION    13u /* in every state header: 13 = the moment has the RDP's pipe idle for a game that sends full syncs (a load runs the frame's sync for an older state taken with it busy); 12 = a moment the hold drained (reraise_sp: RR_HOLD, the lines that came pending in bits 0/1, RR_RSP_RUN = the RSP runs on from its status wait); 11 = the RSP's scalar registers (rsp_gpr: a libdragon game's queue sleeps with its place in them); 10 = the RSP's memories and PC as region 1; 9 = the RDP's command pointers and SP_PC (rcp[]); 8 = format v2 (header first); 7 = PI/SI address
                             * registers, RCP status and the clock carried by the state; 6: the first states */
 
 #define ST_OK           0u
@@ -639,6 +639,7 @@ static void dcache_writeback_all(void) {
 #define STATE_DMA_TIMEOUT_TICKS (46875u * 2000u) /* 2 s per chunk */
 #define STATE_WAIT_MAX  600u                     /* VI frames to wait for a clean moment */
 #define STATE_PREFER_VI 30u                      /* VI frames to hold out for a frame boundary before taking an SP/DP-done moment */
+#define STATE_PIPE_WAIT 90u                      /* VI frames the RDP's pipe flag counts against a moment; then let go (a game without full syncs) */
 static uint32_t borrow_mi = 0;                   /* borrowed mode: the RCP interrupt (one MI bit) the monitor's moment is */
 
 struct state_ctx {                        /* offsets mirrored by state.S */
@@ -1390,6 +1391,61 @@ static void state_finish_load(void) {
          * pointed into a framebuffer) and the empty kick would only leave the pipe
          * busy: the RDP keeps this boot's position. */
     }
+    /* v13: a state taken with the RDP's pipe still busy and the RSP's task done (hook
+     * versions 7 to 12 took such moments: their test let the pipe flag pass, see
+     * state_service). The list's last command, its full sync, had not retired, so its
+     * interrupt is still owed to the saved world, whose scheduler waits for it; nothing
+     * ever raised it, and Wave Race 64 froze on one load in three. Run that sync now,
+     * unfrozen, in place at the list's end, and leave its interrupt pending as a DP
+     * moment's is: the RDP ends at the saved END with the pipe idle, the shape the v9
+     * kick leaves. When the list's last command is no longer the sync (the fifo's
+     * memory is the game's again once the RDP has fetched it: Wave Race 64's held
+     * vertex data there), those eight bytes are lent to a sync of the hook's for the
+     * run and put back after. Never from a buffer of the hook's own: the RDP would sit
+     * there afterwards, the game's next task would carry its fifo on from that end,
+     * and the RDP ran on through memory (Wave Race 64 froze seconds after such a
+     * load). Not for libdragon (no sync to owe), nor for a yielded task (no TASKDONE
+     * signal and no sync at the end: the RDP keeps this boot's place, as before). */
+    if ((h->hook_version >= 7u) && (h->hook_version < 13u) && !rom_is_libdragon() && !dp_raise &&
+        (h->reserved[3] & DPC_PIPE_BUSY) && !(h->reserved[3] & (DPC_CMD_BUSY | DPC_DMA_BUSY)) &&
+        (h->reserved[4] & 0x200u)) {                    /* SP_STATUS signal 2: the task done */
+        uint32_t dpc0 = h->reserved[3];
+        uint32_t end = (h->hook_version >= 9u) ? h->rcp[1] : 0u;
+        vu32 *tail = 0;
+        if ((end >= 8u) && (h->rcp[2] == end)) {
+            if (dpc0 & 1u) {                      /* xbus: the list is in DMEM (v10 put it back) */
+                if (end <= 0x1000u) {
+                    tail = (vu32 *)(0xA4000000u + end - 8u);
+                }
+            } else if (end <= h->memsize) {
+                tail = (vu32 *)(0xA0000000u | (end - 8u));
+            }
+        }
+        if (tail) {
+            uint32_t w0 = tail[0], w1 = tail[1];
+            uint32_t lent = ((w0 >> 24) != 0xE9u);
+            if (lent) {
+                tail[0] = 0xE9000000u;
+                tail[1] = 0;
+            }
+            if (dpc0 & 2u) {
+                DPC_STATUS = 4u;                           /* unfrozen for the run */
+            }
+            DPC_START = end - 8u;
+            DPC_END = end;
+            uint32_t t0 = c0_count();
+            while ((DPC_STATUS & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) && ((c0_count() - t0) < 46875u * 20u)) {
+            }
+            if (lent) {
+                tail[0] = w0;
+                tail[1] = w1;
+            }
+            if (dpc0 & 2u) {
+                DPC_STATUS = 8u;                           /* frozen again */
+            }
+            crumb(0x2Bu, dpc0, end | lent);
+        }
+    }
     /* The feedback text is drawn into the framebuffers the hook has seen. Those
      * belong to the world being replaced: after a load from GoldenEye's main menu
      * into a mission they pointed at mission data, and the text landed there
@@ -1703,10 +1759,21 @@ static void state_service(uint32_t cause) {
         st_dbg[4]++;
         bad = 1;
     }
-    /* pipe busy alone does not count: the RDP keeps that flag up after its last command
-     * until a full sync, and a libdragon game ends its frames without one (it stood at
-     * every tick of an audio player with nothing left to draw) */
-    if (dp & (DPC_CMD_BUSY | DPC_DMA_BUSY)) {
+    /* the RDP's command and DMA units idle, and its pipe as well for a game whose lists
+     * end in a full sync (every retail title): the pipe flag stays up until that sync
+     * retires, so with it up the frame's DP interrupt is still to come, and a world saved
+     * here waits for it forever after a load (Wave Race 64 froze on one load in three
+     * of its attract demo, Banjo-Kazooie on one in five; 1.2 to 1.4, whose test let the
+     * flag pass for libdragon's sake). A libdragon game ends its frames without a sync
+     * and keeps the flag up for good (it stood at every tick of an audio player with
+     * nothing left to draw); a retail game that sends none would too, so after
+     * STATE_PIPE_WAIT frames the flag is let go again, and the load runs the sync such
+     * a state needs itself. */
+    uint32_t dp_busy = DPC_CMD_BUSY | DPC_DMA_BUSY;
+    if (!rom_is_libdragon() && (st_wait < STATE_PIPE_WAIT)) {
+        dp_busy |= DPC_PIPE_BUSY;
+    }
+    if (dp & dp_busy) {
         st_dbg[5]++;
         bad = 1;
     }
