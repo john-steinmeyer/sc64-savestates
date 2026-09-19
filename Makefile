@@ -18,6 +18,9 @@ N64_ROM_RTC = 1
 N64_ROM_REGIONFREE = 1
 N64_ROM_REGION = E
 
+# SC64SS: ROM autoload compiled in, as on upstream's develop branch; the Fast Reboot setting goes with it
+FLAGS ?= -DFEATURE_AUTOLOAD_ROM_ENABLED
+
 N64_CFLAGS += -iquote $(SOURCE_DIR) -iquote $(ASSETS_DIR) -I $(SOURCE_DIR)/libs -isystem $(SOURCE_DIR)/libs/miniz -flto=auto $(FLAGS)
 
 SRCS = \

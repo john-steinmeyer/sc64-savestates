@@ -570,7 +570,7 @@ handler too; the game has no Controller Pak use).
 | VNES64 + Test Cart | works |  |
 | Waialae Country Club: True Golf Classics | works |  |
 | War Gods | works |  |
-| Wave Race 64 | works |  |
+| Wave Race 64 | works | a load can freeze it now and then (a state saved with the RDP mid-frame; see the changelog); fix coming |
 | Wayne Gretzky's 3D Hockey | works |  |
 | Wayne Gretzky's 3D Hockey 98 | works |  |
 | WCW Backstage Assault | does not work | black screen at boot with the engine in place |

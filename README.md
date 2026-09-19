@@ -12,10 +12,11 @@ not upstream's.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
-New in 1.3: saves move between a game's virtual Controller Pak and a real one from the
-menu, single notes or whole paks; the port list shows what each port holds and keeps the
-virtual pak out of a port with a real pak in it; a screenshot fix; the 0.3.4 base. The
-[changelog](CHANGELOG.md) has the details.
+New in 1.4: ROM autoload is back, a game the console boots straight into, with the menu
+a held Start away; a fix for Banjo-Kazooie, which booted with a black sky since 1.2; and
+the video reset switches the VI off, so libdragon homebrew with Nintendo's boot code
+boots. 1.3 brought the pak transfers and the live port list. The [changelog](CHANGELOG.md)
+has the details.
 
 What it adds:
 
@@ -35,6 +36,8 @@ What it adds:
 - Screenshots. A button of your choice writes the screen to the SD card as a PNG.
 - Configurable hotkeys, for every game or per game.
 - Homebrew too. Games built with libdragon get save states as well.
+- ROM autoload. Set a game to boot straight from power-on, with everything above
+  armed; hold Start while switching on to get the menu back.
 
 It needs an Expansion Pak. 280 of the 298 games I've tried work:
 [the compatibility list](docs/savestates.md#compatibility).

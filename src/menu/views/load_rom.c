@@ -892,10 +892,17 @@ static void set_tv_type (menu_t *menu, void *arg) {
 }
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
 static void set_autoload_type (menu_t *menu, void *arg) {
+    // SC64SS: the ROM this screen shows, wherever the screen was opened from. The browser's
+    // folder and highlighted entry are that ROM only when it was opened from the browser;
+    // from the history or the favourites they are whatever the browser last showed, and
+    // the next boot could not open what was stored.
+    path_t *dir = path_clone(menu->load.rom_path);
+    path_pop(dir);
     free(menu->settings.rom_autoload_path);
-    menu->settings.rom_autoload_path = strdup(strip_fs_prefix(path_get(menu->browser.directory)));
+    menu->settings.rom_autoload_path = strdup(strip_fs_prefix(path_get(dir)));
     free(menu->settings.rom_autoload_filename);
-    menu->settings.rom_autoload_filename = strdup(menu->browser.entry->name);
+    menu->settings.rom_autoload_filename = strdup(path_last_get(menu->load.rom_path));
+    path_free(dir);
     // FIXME: add a confirmation box here! (press start on reboot)
     menu->settings.rom_autoload_enabled = true;
     settings_save(&menu->settings);

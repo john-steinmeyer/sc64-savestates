@@ -1,12 +1,40 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.4 (2026-09-18)
+
+- ROM autoload is back. In a ROM's information screen, R, then "Set ROM to autoload",
+  and the console boots straight into that game from then on, with the routine armed
+  as on any launch. Hold Start while switching the console on to get the menu back;
+  that switches autoload off as well. Upstream dropped it in 0.3.0 for Fast Reboot and
+  has brought it back on its develop branch, and this build follows: the Fast Reboot
+  setting is gone with it, as there.
+- Banjo-Kazooie booted with a black sky and a thin strip of ground in 1.2 and 1.3,
+  with Save States on and Slow motion off. Since 1.2 the routine kept a counter on a
+  word in low memory that the game's copy protection checks against its boot code,
+  and a wrong word there makes the game sabotage its own perspective setup. The
+  counter lives elsewhere now. With Slow motion on the routine is placed differently
+  and the game was fine, which is how it went unnoticed here. Reported by Acurrz.
+- The video reset before a game boots switches the VI off as well, the state it is in
+  at power-on, for every ROM that gets the reset. libdragon homebrew built on the
+  stable branch before it shipped its own boot code carries Nintendo's, so 1.3 gave
+  it the full reset and its display setup waited forever for a vblank. With the VI
+  off it does not wait.
+- Known, not fixed here: a load can freeze the game when its state was saved while
+  the RDP was still finishing a frame, which a load cannot reproduce. Wave Race 64
+  hits it most, about one save in three in its attract demo in testing, Banjo-Kazooie
+  once in five, Super Mario 64 never. The cause is understood; the fix, a better
+  choice of the save moment, needs the full survey behind it and comes next.
+
 ## 0.3.4-ss1.3 (2026-09-18)
 
 - Built on N64FlashcartMenu 0.3.4. Its one change resets the video registers
   before a game boots, which fixed crashes in Ocarina of Time upstream. A ROM
-  built with libdragon skips that reset: it sets its video up from the vblank
-  interrupt, which never comes with the timings zeroed, and FlappyBird stayed
-  on a blank screen.
+  built with libdragon skips that reset: libdragon's display setup waits for a
+  vblank when it finds the VI switched on (the stable branch since August 2023,
+  the preview branch until April 2025), and with every timing zeroed that vblank
+  never comes, so FlappyBird stayed on a blank screen. Newer preview builds cope.
+  A ROM with Nintendo's boot code still got the full reset, so a stable-branch
+  build from before October 2024 stayed blank; 1.4 covers those.
 - Saves move between a game's virtual Controller Pak and a real one from the
   menu: single notes either way, or whole paks, from any port. Start in the
   browser, Virtual Controller Paks, or a game's options, Virtual Controller Pak,
