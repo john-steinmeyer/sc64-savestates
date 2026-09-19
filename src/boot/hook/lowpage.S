@@ -31,14 +31,19 @@
 #                 +30 LASTVI (Count at the last tick taken), +34 SISEEN / +38 SIOK (SI
 #                 completions entered / that gave the buttons), +3C SIBLK (dev: the
 #                 first word of the block last looked at), +40 PIDRAM / +44 PICART (the
-#                 game's PI address registers, put back on every way out), +48 SIAGE
-#                 (ticks since an SI completion last gave the buttons)
+#                 game's PI address registers, put back on every way out). 0x1D8 is
+#                 not ours: Banjo-Kazooie's copy protection compares it with the IPL3's
+#                 word (0x200, 0x22C and 0x238 as well) and sabotages its perspective
+#                 setup otherwise, black sky and a thin slice of picture (a counter put
+#                 there did exactly that in 1.2 and 1.3)
 #   0x1DC..0x200  PRE_INSTALL: the engine's tail lands here on every exception until the
 #                 gate is in (see below); after that the tail is j 0x360 and the cart
 #                 installer copies EXIT over these words: the way back to the game after
 #                 a tick or a save (the PI address registers restored last, then the
 #                 game's vector words at 0x120)
 #   0x360..0x3F0  GATE (the engine's tail lands here on every exception) + DMA_PRIM
+#   0x3F0         SIAGE (monitor.S: ticks since an SI completion last gave the buttons;
+#                 the 312-ROM scan found no game using 0x3F0..0x3FF)
 #
 # Why the exits are here too: code fetched from the cart is PIO, and every PIO access
 # lands in PI_CART_ADDR (measured: after a borrow the hook found the trigger's last

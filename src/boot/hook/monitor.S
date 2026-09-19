@@ -59,7 +59,10 @@
 .set D_PCPAD,   0x1CC                   # the PC's pad request: the sequence seen << 16 | polls left
 .set D_PIDRAM,  0x1D0                   # the game's PI_DRAM_ADDR (the tick takes it) ...
 .set D_PICART,  0x1D4                   # ... and PI_CART_ADDR (the gate takes it): restored last
-.set D_SIAGE,   0x1D8                   # ticks since an SI completion last gave the buttons
+.set D_SIAGE,   0x3F0                   # ticks since an SI completion last gave the buttons; past the gate fragment
+                                        # (0x1D8 is a word Banjo-Kazooie's copy protection compares with the IPL3's:
+                                        # with a counter there its perspective setup is sabotaged, black sky and a
+                                        # thin slice of picture; 1.2 and 1.3 had it there)
 .set D_SITERA,  0x1B4                   # the pak server's entry from the game's handler: its ra
 # the virtual Controller Pak's control block on the cart (hook.c VPAK_CTL_PI; build.sh
 # passes PAK_CTL, its kseg1 address, and VPAK_KSEG1, the image's): the menu writes it at

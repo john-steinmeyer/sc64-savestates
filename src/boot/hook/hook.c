@@ -1130,12 +1130,13 @@ static uint32_t state_do_save(uint32_t cause, uint32_t mi) {
  * placement would otherwise send every exception the wrong way after a load: the
  * codes silently stopped (a no-codes state loaded with codes on), or the game
  * jumped into junk (the other way round). Keep this boot's words across the copy. */
-#define BOOT_WORDS_N    (24u + 4u + 36u + 28u + 20u + 28u)
+#define BOOT_WORDS_N    (24u + 4u + 37u + 28u + 20u + 28u)
 static uint32_t boot_words[BOOT_WORDS_N] = {0};
 /* RAM offset, words: the engine, the 0x180 vector, the reinstall stub or the borrow
- * gate, and in borrowed mode the monitor's scratch (0x010), its helper (0x130) and
- * its data plus the pre-install check (0x190..0x200) */
-static const uint32_t boot_ranges[6][2] = {{0x090u, 24u}, {0x180u, 4u}, {0x360u, 36u},
+ * gate (with the monitor's SIAGE word at 0x3F0 after it), and in borrowed mode the
+ * monitor's scratch (0x010), its helper (0x130) and its data plus the pre-install
+ * check (0x190..0x200) */
+static const uint32_t boot_ranges[6][2] = {{0x090u, 24u}, {0x180u, 4u}, {0x360u, 37u},
                                            {0x010u, 28u}, {0x130u, 20u}, {0x190u, 28u}};
 static void boot_words_copy(uint32_t to_ram) {
     uint32_t k = 0;
