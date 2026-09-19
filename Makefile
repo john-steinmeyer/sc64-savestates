@@ -152,8 +152,8 @@ $(BUILD_DIR)/$(PROJECT_NAME).dfs: $(FILESYSTEM)
 
 $(BUILD_DIR)/menu/views/credits.o: .FORCE
 $(BUILD_DIR)/menu/views/credits.o: FLAGS+=-DMENU_VERSION=\"$(MENU_VERSION)\" -DBUILD_TIMESTAMP=\"$(BUILD_TIMESTAMP)\"
-# SC64SS: the save states release and the base version for the Menu information screen
-$(BUILD_DIR)/menu/views/credits.o: FLAGS+=-DSC64SS_RELEASE=\"$(lastword $(subst -ss, ,$(MENU_VERSION)))\" -DSC64SS_BASE=\"$(firstword $(subst -ss, ,$(MENU_VERSION)))\"
+# SC64SS: the save states release and the base version for the Menu information screen, when the version carries them (a build without the -ss suffix, CI's, gets the screen's own fallback)
+$(BUILD_DIR)/menu/views/credits.o: FLAGS+=$(if $(findstring -ss,$(MENU_VERSION)),-DSC64SS_RELEASE=\"$(lastword $(subst -ss, ,$(MENU_VERSION)))\" -DSC64SS_BASE=\"$(firstword $(subst -ss, ,$(MENU_VERSION)))\",)
 
 $(BUILD_DIR)/$(PROJECT_NAME).elf: $(OBJS)
 

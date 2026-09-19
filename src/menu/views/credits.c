@@ -1,14 +1,14 @@
 #include "views.h"
 #include "../sound.h"
 
-#ifndef SC64SS_RELEASE
-#define SC64SS_RELEASE "?"          /* the save states release (the Makefile takes it from MENU_VERSION) */
-#endif
-#ifndef SC64SS_BASE
-#define SC64SS_BASE "?"             /* the N64FlashcartMenu version it is built on */
-#endif
 #ifndef MENU_VERSION
 #define MENU_VERSION "Unknown"
+#endif
+#ifndef SC64SS_RELEASE
+#define SC64SS_RELEASE "(development build)"   /* the save states release (the Makefile takes it from MENU_VERSION) */
+#endif
+#ifndef SC64SS_BASE
+#define SC64SS_BASE MENU_VERSION    /* the N64FlashcartMenu version it is built on */
 #endif
 
 #ifndef BUILD_TIMESTAMP
