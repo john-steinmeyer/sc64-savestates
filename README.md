@@ -13,14 +13,13 @@ information) in the report.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
-New in 1.6: the vertical jitter with the virtual pak on, at Tony Hawk's Pro Skater 3's
-boot and menus and at Perfect Dark's logos, is fixed but for a mild second where those
-games write to their pak, and THPS3 refuses Slow motion as the other games that use all
-of the Expansion Pak do. 1.5 fixed the freeze after a load
-that 1.2 to 1.4 could hit and put this release and repository on the Menu information
-screen; 1.4 brought ROM autoload back, a fix for Banjo-Kazooie and the video reset with
-the VI off; 1.3 the pak transfers and the live port list. The
-[changelog](CHANGELOG.md) has the details.
+New in 1.7: hotkeys and the screenshot button set for every game at once from any
+game's page, an options menu that stays open for the next change, and a fix for the
+Virtual Controller Paks view, which crashed on a pak note with an odd byte in its name.
+1.6 fixed the vertical jitter with the virtual pak on (Tony Hawk's Pro Skater 3, Perfect
+Dark) but for a mild second where those games write to their pak; 1.5 the freeze after a
+load that 1.2 to 1.4 could hit; 1.4 brought ROM autoload back; 1.3 the pak transfers and
+the live port list. The [changelog](CHANGELOG.md) has the details.
 
 What it adds:
 

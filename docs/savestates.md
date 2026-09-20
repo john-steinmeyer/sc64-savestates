@@ -79,20 +79,31 @@ Darkness boots in low resolution with the option on, and not in high. Stored as
 `hook_borrowed=0` in the ROM's `.ini`.
 
 **Hotkeys and Screenshot** opens a page where the quick save, quick load, panel and
-frame step buttons can be set for this game, and a screenshot button chosen (see
-[Screenshots](#screenshots)). Pick a row and press **A**, then hold the buttons on the
-controller for a moment; **R** puts a row back to the menu's setting. The menu's own
+frame step buttons can be set, and a screenshot button chosen (see
+[Screenshots](#screenshots)). Pick a row and press **A**, hold the buttons on the
+controller for a moment, then say whether they are for this game only (**A**) or for
+every game (**Z**). Every game means all of them: the ones given their own buttons
+earlier included, and games added later. A game's own buttons set after that win for
+that game, and **R** on a row puts a game back to what every game has. The menu's own
 settings page (Start in the file browser, **Menu settings**, then **Save State
-Hotkeys**) sets the buttons every game gets unless its own page says otherwise.
+Hotkeys**) shows and sets the same every-game buttons.
+
+The options menu stays open after a setting, back at its top row, and comes back after
+the **Hotkeys and Screenshot** and **Manage saves** pages, so several changes go in one
+visit.
 
 A hotkey is one button or more, held for a moment. The game never sees a hotkey's
 buttons while it is held, so a single-button hotkey takes that button away from the
-game. No hotkey may sit inside another (the frame step button aside, which acts only
-at the panel's Step speed). L + R + Start is refused: an original N64 controller
+game. No hotkey may sit inside another. The frame step button, which acts only at
+the panel's Step speed, may share buttons with the hotkeys but not with the screenshot
+button, a tap that works at Step speed too. L + R + Start is refused: an original N64 controller
 answers that combination with its stick reset and never reports the Start, so it
 cannot work as a hotkey. Stored as `hotkey_save`, `hotkey_load`, `hotkey_panel`, `hotkey_step` and
 `screenshot_button` in the ROM's `.ini` (button names joined by `+`, as in
-`L+R+Up`), and under `[savestates]` in `sd:/menu/config.ini` for the menu's.
+`L+R+Up`), and under `[savestates]` in `sd:/menu/config.ini` for every game's. A
+`hotkey_save_set` number (and so on) beside each says which of the two was set last:
+the menu counts its every-game sets of each hotkey, and a game's own counts only when
+it was set at or after the last of them.
 
 Boot the game normally. Save states and cheats can be on at the same time; with
 GameShark codes loaded the engine sits at its classic place at the top of RAM, as in
@@ -176,8 +187,8 @@ carried over.)
 
 ## Screenshots
 
-With a screenshot button set for a game (the **Hotkeys and Screenshot** page; there is
-none unless you pick one), a tap of it writes the picture on screen to the SD card as
+With a screenshot button set (the **Hotkeys and Screenshot** page, for a game or for
+every game; there is none unless you pick one), a tap of it writes the picture on screen to the SD card as
 a PNG. The game holds still for a tenth of a second (about half a second in 640x480
 modes), taken at the same kind of moment as a save; a game that offers none within two
 seconds gets "SCREENSHOT FAILED" instead. With Slow motion on, "SCREENSHOT SAVED" shows
@@ -213,10 +224,15 @@ With **Virtual Controller Pak** on (the default for games that use one), the gam
 a Controller Pak in the port chosen for it (port 1 unless set otherwise) whether or not
 one is plugged in: the game's pak reads and writes are
 answered from a 32 KiB image in the cartridge memory and the changes go to
-`sd:/savestates/paks/<checkcode>.pak` on the card a moment after the game writes them.
+`sd:/savestates/paks/<checkcode>.pak` on the card about a second and a half after the
+game's last write, the cartridge's LED blinking while the copy runs. Switching the
+console off inside that moment loses the change, or leaves the pak half written, which
+a game reports as a damaged pak: give a save a couple of seconds before the power switch.
 The file is a plain pak image (one bank), so the menu's Controller Pak tools can
 open it, and a fresh one is formatted the first time a game boots with the option
-on. One pak per game.
+on. One pak per game. A file of another size there, copied by hand (a multi-bank
+image, a DexDrive dump with its header), is left alone and the launch stops and says
+so: replace it with a one-bank image, or delete it and the game starts with a fresh pak.
 
 The answers are given from inside the game's own interrupt handler. At boot the
 routine finds the place in libultra's exception handler where a finished controller
@@ -233,7 +249,10 @@ While it is in a port, a real Controller Pak or Rumble Pak in that port is not s
 the game, since the cartridge answers first, and a real Controller Pak there would
 take the game's writes as well, so the port list shows what each port holds and
 refuses one with a Controller Pak in it, and the launch refuses too until the pak is
-out or the virtual pak moved. The other ports are the
+out or the virtual pak moved. A controller whose pak cannot come out, such as a Nintendo
+Switch Online N64 controller through a BlueRetro adapter, which presents a pak of its
+own, goes to its Rumble Pak mode instead (the adapter's Home button switches), and the
+launch accepts that. The other ports are the
 game's as usual: a Rumble Pak in port 1 with the virtual pak in port 2, say, works in
 a game that takes a Controller Pak in any port (Perfect Dark). A game that wants both
 in the same port at different times (Beetle Adventure Racing asks for a Controller
@@ -269,7 +288,9 @@ direction, and a real pak with no file system on it (never formatted, or damaged
 is not written to; format it in the Controller Pak manager first. A pak made before
 this version shows up under the name of its first note until its game is launched
 once, which records the game's file name beside the pak; an empty one without a name
-is left off the list until then, since nothing says whose it is.
+is left off the list until then, since nothing says whose it is. A note whose name or
+extension holds a byte outside the pak's character set is listed with a `?` there and
+copies as it is.
 
 ## Compatibility
 

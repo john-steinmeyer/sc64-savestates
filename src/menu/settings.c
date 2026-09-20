@@ -40,6 +40,7 @@ static settings_t init = {
     .ss_key_load = "L+R+Down",
     .ss_key_panel = "R+Z+Start",
     .ss_key_step = "L",
+    .ss_key_shot = "",
 };
 
 
@@ -97,6 +98,13 @@ void settings_load (settings_t *settings) {
     settings->ss_key_panel = strdup(ini_get_string(ini, "savestates", "hotkey_panel", init.ss_key_panel));
     free(settings->ss_key_step);
     settings->ss_key_step = strdup(ini_get_string(ini, "savestates", "hotkey_step", init.ss_key_step));
+    settings->ss_key_set_save = ini_get_int(ini, "savestates", "hotkey_save_set", 0);
+    settings->ss_key_set_load = ini_get_int(ini, "savestates", "hotkey_load_set", 0);
+    settings->ss_key_set_panel = ini_get_int(ini, "savestates", "hotkey_panel_set", 0);
+    settings->ss_key_set_step = ini_get_int(ini, "savestates", "hotkey_step_set", 0);
+    free(settings->ss_key_shot);
+    settings->ss_key_shot = strdup(ini_get_string(ini, "savestates", "screenshot_button", init.ss_key_shot));
+    settings->ss_key_set_shot = ini_get_int(ini, "savestates", "screenshot_button_set", 0);
 
     ini_free(ini);
 }
@@ -137,6 +145,12 @@ void settings_save (settings_t *settings) {
     ini_set_string(ini, "savestates", "hotkey_load", settings->ss_key_load);
     ini_set_string(ini, "savestates", "hotkey_panel", settings->ss_key_panel);
     ini_set_string(ini, "savestates", "hotkey_step", settings->ss_key_step);
+    ini_set_int(ini, "savestates", "hotkey_save_set", settings->ss_key_set_save);
+    ini_set_int(ini, "savestates", "hotkey_load_set", settings->ss_key_set_load);
+    ini_set_int(ini, "savestates", "hotkey_panel_set", settings->ss_key_set_panel);
+    ini_set_int(ini, "savestates", "hotkey_step_set", settings->ss_key_set_step);
+    ini_set_string(ini, "savestates", "screenshot_button", settings->ss_key_shot);
+    ini_set_int(ini, "savestates", "screenshot_button_set", settings->ss_key_set_shot);
 
     if (!ini_save(ini, settings_path)) {
         debugf("[SETTINGS] Failed to save settings to %s\n", settings_path);

@@ -192,6 +192,19 @@ static int slot_free (const uint8_t *img) {
     return -1;
 }
 
+// A byte outside the pak's character set (0x0F to 0x94, zero as the end) in a note's name or
+// extension makes libdragon's path formatter assert, and libdragon only replaces such bytes
+// when it mounts a pak itself. A game or a tool can write one, and one did: the view crashed
+// on the real pak as soon as it opened. The set's '?' keeps the note visible; the copies use
+// the raw entry, so nothing on a pak changes.
+static void name_clean (uint8_t *s, int len) {
+    for (int i = 0; i < len; i++) {
+        if ((s[i] != 0) && ((s[i] < 0x0F) || (s[i] > 0x94))) {
+            s[i] = 0x40;
+        }
+    }
+}
+
 // The note table: 16 entries of 32 bytes, at page 3 of a one-bank pak (after the page
 // tables of every bank and their mirrors on a bigger one). Each used entry names the
 // game, the publisher, the note and its first page; the page table chains the rest.
@@ -215,6 +228,8 @@ static int notes_read (const uint8_t *img, int banks, note_t *out) {
         memcpy(path.pubcode, e + 4, 2);
         memcpy(path.ext, e + 12, 4);
         memcpy(path.filename, e + 16, 16);
+        name_clean((uint8_t *) path.filename, 16);
+        name_clean((uint8_t *) path.ext, 4);
         cpakfs_path_format(&path, full, sizeof(full));
         if (parse_cpakfs_fullname(full, &parts) == 0) {
             snprintf(note->name, sizeof(note->name), "%s%s%s", parts.filename, parts.ext[0] ? "." : "", parts.ext);

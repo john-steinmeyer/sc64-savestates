@@ -259,6 +259,7 @@ typedef struct component_context_menu {
         void *arg; /**< Argument for the action function */
         struct component_context_menu *submenu; /**< Pointer to the submenu */
         bool gray; /**< SC64SS: drawn in gray (the action still runs, to say why) */
+        bool stay; /**< SC64SS: a setting: the menu stays open after the action, at its top level */
     } list[]; /**< List of menu items */
 } component_context_menu_t;
 

@@ -27,6 +27,7 @@ enum { ROW_SAVE, ROW_LOAD, ROW_PANEL, ROW_STEP, ROW_SHOT, ROWS };
 static const char *row_names[ROWS] = { "Quick save", "Quick load", "Slot panel", "Frame step", "Screenshot" };
 static const char *row_defaults[ROWS] = { SC64SS_KEY_DEFAULT_SAVE, SC64SS_KEY_DEFAULT_LOAD, SC64SS_KEY_DEFAULT_PANEL, SC64SS_KEY_DEFAULT_STEP, "" };
 static const char *row_ids[ROWS] = { "hotkey_save", "hotkey_load", "hotkey_panel", "hotkey_step", "screenshot_button" };
+static const char *row_set_ids[ROWS] = { "hotkey_save_set", "hotkey_load_set", "hotkey_panel_set", "hotkey_step_set", "screenshot_button_set" };
 
 static int row = 0;
 static int capture = -1;            // the row being set from the controller, or -1
@@ -37,10 +38,13 @@ static int idle_frames = 0;
 static bool release_wait = false;   // after a capture: everything up before the view takes input again
 static char message[96] = "";
 static int message_frames = 0;
+static int ask_row = -1;            // a game's page after a hold: the row waiting for "this game or every game"
+static char ask_text[40] = "";
 
 
 static int rows_shown (menu_t *menu) {
-    return menu->hotkeys_for_rom ? ROWS : (ROWS - 1);   // the screenshot button is a game's own
+    (void) menu;
+    return ROWS;
 }
 
 static uint16_t buttons_now (void) {
@@ -76,7 +80,19 @@ static char **menu_field (menu_t *menu, int r) {
         case ROW_LOAD: return &menu->settings.ss_key_load;
         case ROW_PANEL: return &menu->settings.ss_key_panel;
         case ROW_STEP: return &menu->settings.ss_key_step;
-        default: return NULL;
+        default: return &menu->settings.ss_key_shot;
+    }
+}
+
+// the menu's count of every-game sets of a row's hotkey; a game's own key set before the
+// last of them no longer counts, so one set for every game reaches every game
+static int *menu_set_field (menu_t *menu, int r) {
+    switch (r) {
+        case ROW_SAVE: return &menu->settings.ss_key_set_save;
+        case ROW_LOAD: return &menu->settings.ss_key_set_load;
+        case ROW_PANEL: return &menu->settings.ss_key_set_panel;
+        case ROW_STEP: return &menu->settings.ss_key_set_step;
+        default: return &menu->settings.ss_key_set_shot;
     }
 }
 
@@ -84,7 +100,8 @@ static char **menu_field (menu_t *menu, int r) {
 static const char *row_text (menu_t *menu, int r, bool *own) {
     if (menu->hotkeys_for_rom) {
         const char *t = rom_field(menu, r);
-        if (t[0]) {
+        int *ms = menu_set_field(menu, r);
+        if (t[0] && (!ms || (menu->load.rom_info.settings.hotkey_set[r] >= *ms))) {
             *own = true;
             return t;
         }
@@ -117,10 +134,16 @@ static const char *check_mask (menu_t *menu, int r, uint16_t m) {
         return "L + R + Start is an original controller's\nstick reset: it never reaches a game.";
     }
     if (r == ROW_STEP) {
-        return NULL;                // acts at the panel's Step speed only: free to overlap
+        // acts at the panel's Step speed only, so it may overlap the hotkeys; not the
+        // screenshot button, a tap that fires at Step speed too (a shot at every step)
+        uint16_t sm = row_mask(menu, ROW_SHOT);
+        if (sm && (((sm & m) == m) || ((sm & m) == sm))) {
+            return "That sits inside the screenshot button,\nor the screenshot button inside it.";
+        }
+        return NULL;
     }
     for (int o = ROW_SAVE; o <= ROW_SHOT; o++) {
-        uint16_t om = (o == ROW_STEP) ? 0 : row_mask(menu, o);
+        uint16_t om = ((o == ROW_STEP) && (r != ROW_SHOT)) ? 0 : row_mask(menu, o);
         if ((o != r) && om && (((om & m) == m) || ((om & m) == om))) {
             return "That sits inside another hotkey,\nor another hotkey inside it.";
         }
@@ -128,19 +151,43 @@ static const char *check_mask (menu_t *menu, int r, uint16_t m) {
     return NULL;
 }
 
-// a row's new text (NULL: back to the default)
+// a row's new text for this game (NULL: back to what every game has), with the menu's
+// count beside it so the key counts from now on
+static void store_rom (menu_t *menu, int r, const char *text) {
+    snprintf(rom_field(menu, r), 32, "%s", text ? text : "");
+    rom_config_setting_set_text(menu->load.rom_path, row_ids[r], text);
+    int *ms = menu_set_field(menu, r);
+    if (ms) {
+        char n[16];
+        menu->load.rom_info.settings.hotkey_set[r] = text ? *ms : 0;
+        snprintf(n, sizeof(n), "%d", *ms);
+        rom_config_setting_set_text(menu->load.rom_path, row_set_ids[r], text ? n : NULL);
+    }
+}
+
+// a row's new text for every game (NULL: back to the built-in one): the count goes up, so
+// a game's own key from before stops counting; on a game's page that game's own goes too
+static void store_menu (menu_t *menu, int r, const char *text) {
+    char **m = menu_field(menu, r);
+    int *ms = menu_set_field(menu, r);
+    if (!m || !ms) {
+        return;
+    }
+    free(*m);
+    *m = strdup(text ? text : row_defaults[r]);
+    (*ms)++;
+    settings_save(&menu->settings);
+    if (menu->hotkeys_for_rom && rom_field(menu, r)[0]) {
+        store_rom(menu, r, NULL);
+    }
+}
+
+// a row's new text (NULL: back to the default) on the page's own side
 static void store (menu_t *menu, int r, const char *text) {
     if (menu->hotkeys_for_rom) {
-        snprintf(rom_field(menu, r), 32, "%s", text ? text : "");
-        rom_config_setting_set_text(menu->load.rom_path, row_ids[r], text);
+        store_rom(menu, r, text);
     } else {
-        char **m = menu_field(menu, r);
-        if (!m) {
-            return;
-        }
-        free(*m);
-        *m = strdup(text ? text : row_defaults[r]);
-        settings_save(&menu->settings);
+        store_menu(menu, r, text);
     }
 }
 
@@ -176,6 +223,11 @@ static void process (menu_t *menu) {
             if (why) {
                 show_message(why);
                 sound_play_effect(SFX_ERROR);
+            } else if (menu->hotkeys_for_rom) {
+                // this game only, or every game: asked once everything is let go
+                sc64ss_keys_text(now, ask_text, sizeof(ask_text));
+                ask_row = capture;
+                sound_play_effect(SFX_SETTING);
             } else {
                 char t[40];
                 sc64ss_keys_text(now, t, sizeof(t));
@@ -192,6 +244,25 @@ static void process (menu_t *menu) {
     if (release_wait) {
         if (now == 0) {
             release_wait = false;
+        }
+        return;
+    }
+
+    if (ask_row >= 0) {
+        if (menu->actions.enter) {
+            store_rom(menu, ask_row, ask_text);
+            show_message("Set for this game.");
+            sound_play_effect(SFX_SETTING);
+            ask_row = -1;
+        } else if (menu->actions.lz_context) {
+            store_menu(menu, ask_row, ask_text);
+            show_message("Set for every game.");
+            sound_play_effect(SFX_SETTING);
+            ask_row = -1;
+        } else if (menu->actions.back) {
+            show_message("Left as it was.");
+            sound_play_effect(SFX_EXIT);
+            ask_row = -1;
         }
         return;
     }
@@ -217,9 +288,9 @@ static void process (menu_t *menu) {
     } else if (menu->actions.options) {
         store(menu, row, NULL);
         if (menu->hotkeys_for_rom) {
-            show_message((row == ROW_SHOT) ? "Screenshot button: none." : "Back to the menu's setting.");
+            show_message("Back to what every game has.");
         } else {
-            show_message("Back to the built-in setting.");
+            show_message((row == ROW_SHOT) ? "Screenshot button: none, for every game." : "Back to the built-in setting.");
         }
         sound_play_effect(SFX_SETTING);
     } else if (menu->actions.back) {
@@ -275,16 +346,16 @@ static void draw (menu_t *menu, surface_t *d) {
         "%s",
         body,
         menu->hotkeys_for_rom
-            ? "One button or more; a short hold in the\n"
-              "game. The game never sees a hotkey while\n"
-              "it is held, so pick buttons it can spare.\n"
-              "The frame step button works at the\n"
-              "panel's Step speed."
-            : "These apply to every game; a game's own\n"
-              "options can set others for it.\n"
-              "One button or more; a short hold in the\n"
-              "game. The game never sees a hotkey while\n"
-              "it is held, so pick buttons it can spare."
+            ? "After the hold, A keeps it for this game\n"
+              "and Z gives it to every game. One button\n"
+              "or more; a short hold in the game, which\n"
+              "never sees a hotkey while it is held, so\n"
+              "pick buttons it can spare."
+            : "These apply to every game, one given its\n"
+              "own before included; a game's own options\n"
+              "can set others for it after. One button or\n"
+              "more; a short hold in the game, which never\n"
+              "sees a hotkey while it is held."
     );
 
     ui_components_actions_bar_text_draw(
@@ -312,6 +383,15 @@ static void draw (menu_t *menu, surface_t *d) {
             row_names[capture],
             held_last ? t : "..."
         );
+    } else if (ask_row >= 0) {
+        ui_components_messagebox_draw(
+            "%s: %s\n\n"
+            "A: this game only\n"
+            "Z: every game\n"
+            "B: leave it as it was",
+            row_names[ask_row],
+            ask_text
+        );
     } else if (message_frames) {
         message_frames--;
         ui_components_messagebox_draw("%s", message);
@@ -327,6 +407,7 @@ void view_hotkeys_init (menu_t *menu) {
     capture = -1;
     release_wait = false;
     message_frames = 0;
+    ask_row = -1;
 }
 
 void view_hotkeys_display (menu_t *menu, surface_t *display) {

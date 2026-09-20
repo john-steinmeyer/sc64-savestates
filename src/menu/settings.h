@@ -66,6 +66,15 @@ typedef struct {
     char *ss_key_load;
     char *ss_key_panel;
     char *ss_key_step;
+    /** @brief SC64SS: how many times each of those was set for every game. A game's own key
+     *  set before the last such set of that key no longer counts (hotkey_*_set in its ini). */
+    int ss_key_set_save;
+    int ss_key_set_load;
+    int ss_key_set_panel;
+    int ss_key_set_step;
+    /** @brief SC64SS: the screenshot button every game gets (empty: none), and its count */
+    char *ss_key_shot;
+    int ss_key_set_shot;
 
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
     /** @brief Enable the ability to bypass the menu and instantly load a ROM on power and reset button */

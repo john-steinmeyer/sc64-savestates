@@ -1,5 +1,36 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.7 (2026-09-19)
+
+- A hotkey can be set for every game at once, the screenshot button included. On a
+  game's Hotkeys and Screenshot page, after the hold, A keeps the buttons for this game
+  and Z gives them to every game: the ones given their own earlier included, and games
+  added later. A game's own set afterwards still wins for it. The menu's Save State
+  Hotkeys page sets the same every-game buttons and has the screenshot button now. The
+  frame step button may share buttons with the hotkeys, as before, but not with the
+  screenshot button, which fires at Step speed too. Asked for by DEFAULTDNB.
+- A game's options menu stays open after a setting, back at its top row, and comes back
+  after the Hotkeys and Screenshot and Manage saves pages, for the next change.
+- The Virtual Controller Paks view no longer crashes on a real pak holding a note whose
+  name or extension has a byte outside the pak's character set. The menu showed its
+  assertion screen ("cannot convert invalid N64CP char") the moment the view opened:
+  the view handed the raw bytes to libdragon's path formatter, which refuses such a
+  byte, where libdragon itself replaces them when it reads a pak. The set has codes for
+  space, digits, capitals, a few marks and katakana; a game or a tool had written
+  something else into that note. The byte shows as `?` now and the note copies as it
+  is. Reported by Tom Scro, with the dump that named it.
+- A controller whose Controller Pak cannot come out, such as a Nintendo Switch Online
+  N64 controller through a BlueRetro adapter, presents a pak the launch refuses in the
+  virtual pak's port. The notes now say its Rumble Pak mode is the way around, which is
+  how Tom got past it.
+- A virtual pak file of the wrong size is left alone. A file copied into
+  `sd:/savestates/paks` that is not a plain 32 KiB image (a multi-bank image, a DexDrive
+  dump with its header) was replaced by a fresh pak at the next launch; now the launch
+  stops and says what it found, and only an empty file, from a power cut while it was
+  made, is remade.
+- The notes say when a game's pak writes reach the card (about a second and a half
+  after the last one, the LED blinking) and that the console must stay on for that.
+
 ## 0.3.4-ss1.6 (2026-09-19)
 
 - The vertical jitter with the virtual pak on is fixed: Tony Hawk's Pro Skater 3 at its

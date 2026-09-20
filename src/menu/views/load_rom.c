@@ -585,12 +585,21 @@ static bool sc64ss_prepare_pak (menu_t *menu) {
     path_push(file, name);
     char *fp = path_get(file);
     FILE *f = fopen(fp, "rb");
+    bool foreign = false;
     if (f) {
-        size_t got = fread(img, 1, SC64SS_VPAK_LEN, f);
+        long size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1L;
+        rewind(f);
+        if ((size != 0) && (size != (long) SC64SS_VPAK_LEN)) {
+            // not a plain one-bank image but a file copied here by hand: never overwritten (the
+            // launch refuses before this); an empty one, a power cut while it was made, is remade
+            foreign = true;
+        } else {
+            size_t got = fread(img, 1, SC64SS_VPAK_LEN, f);
+            ok = (got == SC64SS_VPAK_LEN);
+        }
         fclose(f);
-        ok = (got == SC64SS_VPAK_LEN);
     }
-    if (!ok) {
+    if (!ok && !foreign) {
         sc64ss_pak_format(img, crc1, crc2);
         f = fopen(fp, "wb");
         if (f) {
@@ -636,6 +645,24 @@ static bool sc64ss_prepare_pak (menu_t *menu) {
     path_free(dir);
     return ok;
 }
+
+// SC64SS: the size of this game's virtual pak file on the card, -1 with no file, and its
+// name (<checkcode>.pak) for a message
+static long sc64ss_pak_file_size (menu_t *menu, char *name, size_t name_len) {
+    uint64_t check_code = (uint64_t) menu->load.rom_info.check_code;
+    snprintf(name, name_len, "%08lX%08lX.pak", (unsigned long) (check_code >> 32), (unsigned long) (check_code & 0xFFFFFFFFULL));
+    path_t *file = path_init(menu->storage_prefix, "/savestates/paks");
+    path_push(file, name);
+    long size = -1L;
+    FILE *f = fopen(path_get(file), "rb");
+    if (f) {
+        size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1L;
+        fclose(f);
+    }
+    path_free(file);
+    return size;
+}
+static char vpak_file_text[320];
 
 static bool show_extra_info_message = false;
 static bool show_advanced_info_message = false;
@@ -1067,7 +1094,13 @@ static void set_slowmotion_option (menu_t *menu, void *arg) {
 }
 
 // SC64SS: this ROM's own hotkeys and its screenshot button
+// SC64SS: a page opened from the options menu brings the menu back on its return, at the
+// row it was opened from
+static bool options_reopen = false;
+static int options_last_row = 0;
+
 static void open_hotkeys (menu_t *menu, void *arg) {
+    options_reopen = true;
     (void)arg;
     menu->hotkeys_for_rom = true;
     menu->next_mode = MENU_MODE_HOTKEYS;
@@ -1075,6 +1108,7 @@ static void open_hotkeys (menu_t *menu, void *arg) {
 
 // SC64SS: this game's virtual pak beside a real Controller Pak, for copies either way
 static void open_vpak_copy (menu_t *menu, void *arg) {
+    options_reopen = true;
     (void)arg;
     menu->vpak_view.check_code = menu->load.rom_info.check_code;
     menu->vpak_view.from_rom = true;
@@ -1092,6 +1126,21 @@ static uint16_t sc64ss_key_effective (const char *rom_text, const char *menu_tex
         m = sc64ss_keys_parse(builtin);
     }
     return m;
+}
+
+// SC64SS: a game's own hotkey text when it counts (set no earlier than the menu's last set of
+// that hotkey for every game), else empty; k = 0 save, 1 load, 2 panel, 3 step, 4 screenshot
+static const char *sc64ss_rom_key (menu_t *menu, int k) {
+    const char *t;
+    int menu_set;
+    switch (k) {
+        case 0: t = menu->load.rom_info.settings.hotkey_save; menu_set = menu->settings.ss_key_set_save; break;
+        case 1: t = menu->load.rom_info.settings.hotkey_load; menu_set = menu->settings.ss_key_set_load; break;
+        case 2: t = menu->load.rom_info.settings.hotkey_panel; menu_set = menu->settings.ss_key_set_panel; break;
+        case 3: t = menu->load.rom_info.settings.hotkey_step; menu_set = menu->settings.ss_key_set_step; break;
+        default: t = menu->load.rom_info.settings.screenshot_button; menu_set = menu->settings.ss_key_set_shot; break;
+    }
+    return sc64ss_key_own(t, menu->load.rom_info.settings.hotkey_set[k], menu_set) ? t : "";
 }
 
 static void open_datel_code_editor (menu_t *menu, void *arg) {
@@ -1183,52 +1232,52 @@ static void iterate_metadata_image(menu_t *menu, int direction) {
 static component_context_menu_t set_cic_type_context_menu = {
     .get_default_selection = get_rom_cic_override_current_selection,
     .list = {
-    {.text = "Automatic", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_AUTOMATIC) },
-    {.text = "CIC-6101", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_6101) },
-    {.text = "CIC-7102", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_7102) },
-    {.text = "CIC-6102 / CIC-7101", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x102) },
-    {.text = "CIC-6103 / CIC-7103", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x103) },
-    {.text = "CIC-6105 / CIC-7105", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x105) },
-    {.text = "CIC-6106 / CIC-7106", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x106) },
-    {.text = "Aleck64 CIC-5101", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_5101) },
-    {.text = "64DD ROM conversion CIC-5167", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_5167) },
-    {.text = "NDDJ0 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8301) },
-    {.text = "NDDJ1 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8302) },
-    {.text = "NDDJ2 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8303) },
-    {.text = "NDXJ0 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8401) },
-    {.text = "NDDE0 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8501) },
+    {.text = "Automatic", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_AUTOMATIC), .stay = true },
+    {.text = "CIC-6101", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_6101), .stay = true },
+    {.text = "CIC-7102", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_7102), .stay = true },
+    {.text = "CIC-6102 / CIC-7101", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x102), .stay = true },
+    {.text = "CIC-6103 / CIC-7103", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x103), .stay = true },
+    {.text = "CIC-6105 / CIC-7105", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x105), .stay = true },
+    {.text = "CIC-6106 / CIC-7106", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_x106), .stay = true },
+    {.text = "Aleck64 CIC-5101", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_5101), .stay = true },
+    {.text = "64DD ROM conversion CIC-5167", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_5167), .stay = true },
+    {.text = "NDDJ0 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8301), .stay = true },
+    {.text = "NDDJ1 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8302), .stay = true },
+    {.text = "NDDJ2 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8303), .stay = true },
+    {.text = "NDXJ0 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8401), .stay = true },
+    {.text = "NDDE0 64DD IPL", .action = set_cic_type, .arg = (void *) (ROM_CIC_TYPE_8501), .stay = true },
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
 static component_context_menu_t set_save_type_context_menu = {
     .get_default_selection = get_rom_save_override_current_selection,
     .list = {
-    { .text = "Automatic", .action = set_save_type, .arg = (void *) (SAVE_TYPE_AUTOMATIC) },
-    { .text = "None", .action = set_save_type, .arg = (void *) (SAVE_TYPE_NONE) },
-    { .text = "EEPROM 4kbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_EEPROM_4KBIT) },
-    { .text = "EEPROM 16kbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_EEPROM_16KBIT) },
-    { .text = "SRAM 256kbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_SRAM_256KBIT) },
-    { .text = "SRAM 768kbit / 3 banks", .action = set_save_type, .arg = (void *) (SAVE_TYPE_SRAM_BANKED) },
-    { .text = "SRAM 1Mbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_SRAM_1MBIT) },
-    { .text = "FlashRAM 1Mbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_FLASHRAM_1MBIT) },
+    { .text = "Automatic", .action = set_save_type, .arg = (void *) (SAVE_TYPE_AUTOMATIC), .stay = true },
+    { .text = "None", .action = set_save_type, .arg = (void *) (SAVE_TYPE_NONE), .stay = true },
+    { .text = "EEPROM 4kbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_EEPROM_4KBIT), .stay = true },
+    { .text = "EEPROM 16kbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_EEPROM_16KBIT), .stay = true },
+    { .text = "SRAM 256kbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_SRAM_256KBIT), .stay = true },
+    { .text = "SRAM 768kbit / 3 banks", .action = set_save_type, .arg = (void *) (SAVE_TYPE_SRAM_BANKED), .stay = true },
+    { .text = "SRAM 1Mbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_SRAM_1MBIT), .stay = true },
+    { .text = "FlashRAM 1Mbit", .action = set_save_type, .arg = (void *) (SAVE_TYPE_FLASHRAM_1MBIT), .stay = true },
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
 static component_context_menu_t set_tv_type_context_menu = {
     .get_default_selection = get_rom_tv_override_current_selection,
     .list = {
-    { .text = "Automatic", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_AUTOMATIC) },
-    { .text = "PAL", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_PAL) },
-    { .text = "NTSC", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_NTSC) },
-    { .text = "MPAL", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_MPAL) },
+    { .text = "Automatic", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_AUTOMATIC), .stay = true },
+    { .text = "PAL", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_PAL), .stay = true },
+    { .text = "NTSC", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_NTSC), .stay = true },
+    { .text = "MPAL", .action = set_tv_type, .arg = (void *) (ROM_TV_TYPE_MPAL), .stay = true },
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
 static component_context_menu_t set_savestate_options_menu = {
     .get_default_selection = get_rom_savestate_current_selection,
     .list = {
-    { .text = "Enabled", .action = set_savestate_option, .arg = (void *) (true)},
-    { .text = "Disabled", .action = set_savestate_option, .arg = (void *) (false)},
+    { .text = "Enabled", .action = set_savestate_option, .arg = (void *) (true), .stay = true},
+    { .text = "Disabled", .action = set_savestate_option, .arg = (void *) (false), .stay = true},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -1239,11 +1288,11 @@ static char vpak_port_text[4][40] = { "Port 1", "Port 2", "Port 3", "Port 4" };
 static component_context_menu_t set_vpak_options_menu = {
     .get_default_selection = get_rom_vpak_current_selection,
     .list = {
-    { .text = vpak_port_text[0], .action = set_vpak_option, .arg = (void *) (1)},
-    { .text = vpak_port_text[1], .action = set_vpak_option, .arg = (void *) (2)},
-    { .text = vpak_port_text[2], .action = set_vpak_option, .arg = (void *) (3)},
-    { .text = vpak_port_text[3], .action = set_vpak_option, .arg = (void *) (4)},
-    { .text = "Off", .action = set_vpak_option, .arg = (void *) (0)},
+    { .text = vpak_port_text[0], .action = set_vpak_option, .arg = (void *) (1), .stay = true},
+    { .text = vpak_port_text[1], .action = set_vpak_option, .arg = (void *) (2), .stay = true},
+    { .text = vpak_port_text[2], .action = set_vpak_option, .arg = (void *) (3), .stay = true},
+    { .text = vpak_port_text[3], .action = set_vpak_option, .arg = (void *) (4), .stay = true},
+    { .text = "Off", .action = set_vpak_option, .arg = (void *) (0), .stay = true},
     { .text = "Manage saves", .action = open_vpak_copy, .arg = (void *) (0x100)},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
@@ -1251,8 +1300,8 @@ static component_context_menu_t set_vpak_options_menu = {
 static component_context_menu_t set_slowmotion_options_menu = {
     .get_default_selection = get_rom_slowmotion_current_selection,
     .list = {
-    { .text = "Enabled", .action = set_slowmotion_option, .arg = (void *) (true)},
-    { .text = "Disabled", .action = set_slowmotion_option, .arg = (void *) (false)},
+    { .text = "Enabled", .action = set_slowmotion_option, .arg = (void *) (true), .stay = true},
+    { .text = "Disabled", .action = set_slowmotion_option, .arg = (void *) (false), .stay = true},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -1265,8 +1314,8 @@ static component_context_menu_t set_slowmotion_options_menu = {
 static component_context_menu_t set_cheat_options_menu = {
     .get_default_selection = get_rom_cheat_override_current_selection,
     .list = {
-    { .text = "Enabled", .action = set_cheat_option, .arg = (void *) (true)},
-    { .text = "Disabled", .action = set_cheat_option, .arg = (void *) (false)},
+    { .text = "Enabled", .action = set_cheat_option, .arg = (void *) (true), .stay = true},
+    { .text = "Disabled", .action = set_cheat_option, .arg = (void *) (false), .stay = true},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -1274,8 +1323,8 @@ static component_context_menu_t set_cheat_options_menu = {
 static component_context_menu_t set_patcher_options_menu = {
     .get_default_selection = get_rom_patch_override_current_selection,
     .list = {
-    { .text = "Enabled", .action = set_patcher_option, .arg = (void *) (true)},
-    { .text = "Disabled", .action = set_patcher_option, .arg = (void *) (false)},
+    { .text = "Enabled", .action = set_patcher_option, .arg = (void *) (true), .stay = true},
+    { .text = "Disabled", .action = set_patcher_option, .arg = (void *) (false), .stay = true},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 #endif
@@ -1285,8 +1334,8 @@ static int get_rom_clear_rdram_current_selection (menu_t *menu);
 static component_context_menu_t set_clear_rdram_options_menu = {
     .get_default_selection = get_rom_clear_rdram_current_selection,
     .list = {
-    { .text = "Enabled", .action = set_clear_rdram_option, .arg = (void *) (true)},
-    { .text = "Disabled", .action = set_clear_rdram_option, .arg = (void *) (false)},
+    { .text = "Enabled", .action = set_clear_rdram_option, .arg = (void *) (true), .stay = true},
+    { .text = "Disabled", .action = set_clear_rdram_option, .arg = (void *) (false), .stay = true},
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -1295,7 +1344,7 @@ static component_context_menu_t options_context_menu = { .list = {
     { .text = "Set Save Type", .submenu = &set_save_type_context_menu },
     { .text = "Set TV Type", .submenu = &set_tv_type_context_menu },
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    { .text = "Set ROM to autoload", .action = set_autoload_type },
+    { .text = "Set ROM to autoload", .action = set_autoload_type, .stay = true },
 #endif
     { .text = "Save States", .submenu = &set_savestate_options_menu },
     { .text = "Virtual Controller Pak", .submenu = &set_vpak_options_menu },
@@ -1417,6 +1466,9 @@ static void vpak_ports_refresh (void) {
 
 static void process (menu_t *menu) {
     vpak_ports_refresh();
+    if (options_context_menu.row_selected >= 0) {
+        options_last_row = options_context_menu.row_selected;   // SC64SS: where a page's return reopens it
+    }
     if (ui_components_context_menu_process(menu, &options_context_menu)) {
         return;
     }
@@ -1521,8 +1573,8 @@ static void draw (menu_t *menu, surface_t *d) {
             format_rom_pak_feature_info(menu->load.rom_info.features.transfer_pak),
             format_boolean_type(menu->load.rom_info.settings.savestates_enabled),
             format_vpak_info(&menu->load.rom_info),
-            sc64ss_keys_text(sc64ss_key_effective(menu->load.rom_info.settings.hotkey_save, menu->settings.ss_key_save, SC64SS_KEY_DEFAULT_SAVE), key_save_text, sizeof(key_save_text)),
-            sc64ss_keys_text(sc64ss_key_effective(menu->load.rom_info.settings.hotkey_load, menu->settings.ss_key_load, SC64SS_KEY_DEFAULT_LOAD), key_load_text, sizeof(key_load_text)),
+            sc64ss_keys_text(sc64ss_key_effective(sc64ss_rom_key(menu, 0), menu->settings.ss_key_save, SC64SS_KEY_DEFAULT_SAVE), key_save_text, sizeof(key_save_text)),
+            sc64ss_keys_text(sc64ss_key_effective(sc64ss_rom_key(menu, 1), menu->settings.ss_key_load, SC64SS_KEY_DEFAULT_LOAD), key_load_text, sizeof(key_load_text)),
             format_boolean_type(menu->load.rom_info.settings.cheats_enabled),
             format_boolean_type(menu->load.rom_info.settings.patches_enabled),
             format_boolean_type(menu->load.rom_info.settings.clear_rdram_enabled)
@@ -1688,11 +1740,11 @@ static void load (menu_t *menu) {
     bool ce_vpak = is_memory_expanded() && menu->load.rom_info.settings.vpak_enabled;
     // SC64SS: the hotkeys (the ROM's own, else the menu's, else built in) and the screenshot
     // button; a screenshot button alone arms the routine as save states do
-    uint16_t ce_key_save = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_save, menu->settings.ss_key_save, SC64SS_KEY_DEFAULT_SAVE);
-    uint16_t ce_key_load = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_load, menu->settings.ss_key_load, SC64SS_KEY_DEFAULT_LOAD);
-    uint16_t ce_key_panel = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_panel, menu->settings.ss_key_panel, SC64SS_KEY_DEFAULT_PANEL);
-    uint16_t ce_key_step = sc64ss_key_effective(menu->load.rom_info.settings.hotkey_step, menu->settings.ss_key_step, SC64SS_KEY_DEFAULT_STEP);
-    uint16_t ce_key_shot = sc64ss_keys_parse(menu->load.rom_info.settings.screenshot_button);
+    uint16_t ce_key_save = sc64ss_key_effective(sc64ss_rom_key(menu, 0), menu->settings.ss_key_save, SC64SS_KEY_DEFAULT_SAVE);
+    uint16_t ce_key_load = sc64ss_key_effective(sc64ss_rom_key(menu, 1), menu->settings.ss_key_load, SC64SS_KEY_DEFAULT_LOAD);
+    uint16_t ce_key_panel = sc64ss_key_effective(sc64ss_rom_key(menu, 2), menu->settings.ss_key_panel, SC64SS_KEY_DEFAULT_PANEL);
+    uint16_t ce_key_step = sc64ss_key_effective(sc64ss_rom_key(menu, 3), menu->settings.ss_key_step, SC64SS_KEY_DEFAULT_STEP);
+    uint16_t ce_key_shot = sc64ss_key_effective(sc64ss_rom_key(menu, 4), menu->settings.ss_key_shot, "");
     bool ce_shots = is_memory_expanded() && (ce_key_shot != 0);
     if (menu->load.rom_info.libdragon_old && (ce_states || ce_vpak || ce_shots)) {
         // SC64SS: libdragon's entry code from before its own boot code copies the game's
@@ -1785,6 +1837,20 @@ static void load (menu_t *menu) {
     }
     if (!menu->load.rom_info.settings.watch_reads) {
         debugf("SC64SS: watch_reads=0 in the ini, the watchpoint covers writes only\n");
+    }
+    // SC64SS: this game's pak file on the card must be a plain one-bank image. A file of another
+    // size was copied there by hand (a multi-bank image, a dump with a header) and the launch
+    // stops rather than have it replaced, or misread by the game
+    if (ce_vpak) {
+        char pak_name[48];
+        long pak_size = sc64ss_pak_file_size(menu, pak_name, sizeof(pak_name));
+        if ((pak_size > 0) && (pak_size != (long) SC64SS_VPAK_LEN)) {
+            snprintf(vpak_file_text, sizeof(vpak_file_text),
+                     "This game's virtual pak file is not a plain 32 KiB pak image (%ld bytes):\nsd:/savestates/paks/\n%s\nThe launch leaves it alone. Replace it with a one-bank image, or delete it and the game starts with a fresh pak.",
+                     pak_size, pak_name);
+            menu_show_error(menu, vpak_file_text);
+            return;
+        }
     }
     // SC64SS: a real Controller Pak in the virtual pak's port would take the game's writes as
     // well as the virtual one: the launch waits until it is out, or the pak set elsewhere
@@ -2194,6 +2260,11 @@ void view_load_rom_init (menu_t *menu) {
         current_metadata_image_index = 0;
         boxart = ui_components_boxart_init(menu->storage_prefix, menu->load.rom_info.game_code, menu->load.rom_info.title, IMAGE_BOXART_FRONT);
         ui_components_context_menu_init(&options_context_menu);
+        if (options_reopen) {   // SC64SS: back from a page the options menu opened: the menu again, at that row
+            options_reopen = false;
+            ui_components_context_menu_show(&options_context_menu);
+            options_context_menu.row_selected = options_last_row;
+        }
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
     }
 #endif

@@ -796,6 +796,7 @@ static void extract_rom_info (match_t *match, rom_header_t *rom_header, rom_info
     rom_info->settings.hotkey_load[0] = 0;
     rom_info->settings.hotkey_panel[0] = 0;
     rom_info->settings.hotkey_step[0] = 0;
+    memset(rom_info->settings.hotkey_set, 0, sizeof(rom_info->settings.hotkey_set));
     rom_info->settings.screenshot_button[0] = 0;
 }
 
@@ -1208,6 +1209,11 @@ static void load_rom_config_from_file (path_t *path, rom_info_t *rom_info) {
         snprintf(rom_info->settings.hotkey_load, sizeof(rom_info->settings.hotkey_load), "%s", ini_get_string(rom_config_ini, "", "hotkey_load", ""));
         snprintf(rom_info->settings.hotkey_panel, sizeof(rom_info->settings.hotkey_panel), "%s", ini_get_string(rom_config_ini, "", "hotkey_panel", ""));
         snprintf(rom_info->settings.hotkey_step, sizeof(rom_info->settings.hotkey_step), "%s", ini_get_string(rom_config_ini, "", "hotkey_step", ""));
+        rom_info->settings.hotkey_set[0] = ini_get_int(rom_config_ini, "", "hotkey_save_set", 0);
+        rom_info->settings.hotkey_set[1] = ini_get_int(rom_config_ini, "", "hotkey_load_set", 0);
+        rom_info->settings.hotkey_set[2] = ini_get_int(rom_config_ini, "", "hotkey_panel_set", 0);
+        rom_info->settings.hotkey_set[3] = ini_get_int(rom_config_ini, "", "hotkey_step_set", 0);
+        rom_info->settings.hotkey_set[4] = ini_get_int(rom_config_ini, "", "screenshot_button_set", 0);
         snprintf(rom_info->settings.screenshot_button, sizeof(rom_info->settings.screenshot_button), "%s", ini_get_string(rom_config_ini, "", "screenshot_button", ""));
         rom_info->settings.patches_enabled = ini_get_bool(rom_config_ini, "", "patches_enabled", false);
         rom_info->settings.clear_rdram_enabled = ini_get_bool(rom_config_ini, "", "clear_rdram_enabled", false);

@@ -176,6 +176,7 @@ typedef struct {
         char hotkey_load[32];       /**< SC64SS: ... quick load */
         char hotkey_panel[32];      /**< SC64SS: ... the slot panel */
         char hotkey_step[32];       /**< SC64SS: ... the frame step button */
+        int hotkey_set[5];          /**< SC64SS: the menu's count of every-game sets when each own hotkey or the screenshot button was set (hotkey_save_set ..., screenshot_button_set): an own one older than the last every-game set of it does not count */
         char screenshot_button[32]; /**< SC64SS: the screenshot button (empty: none) */
     } settings;                     /**< The ROM settings */
 
@@ -309,6 +310,11 @@ rom_err_t rom_config_setting_set_text (path_t *path, const char *id, const char 
 #define SC64SS_KEY_DEFAULT_PANEL  "R+Z+Start"
 #define SC64SS_KEY_DEFAULT_STEP   "L"
 uint16_t sc64ss_keys_parse (const char *text);
+/** SC64SS: a game's own hotkey counts when it reads as something and was set no earlier than
+ *  the menu's last set of that hotkey for every game */
+static inline bool sc64ss_key_own (const char *rom_text, int rom_set, int menu_set) {
+    return rom_text[0] && (rom_set >= menu_set);
+}
 char *sc64ss_keys_text (uint16_t mask, char *buf, size_t len);
 
 /**
