@@ -166,6 +166,7 @@ typedef struct {
     struct {
         bool cheats_enabled;        /**< Cheats enabled */
         bool savestates_enabled;    /**< SC64SS: save states enabled (off by default: slot files) */
+        uint8_t savestates_spare;   /**< SC64SS: empty slots kept ahead of the last used one on the card (6 unless the ini says; the list grows as it fills) */
         bool vpak_enabled;          /**< SC64SS: a virtual Controller Pak (on by default for the database's pak users) */
         uint8_t vpak_port;          /**< SC64SS: the port it sits in at launch, 1..4 (1 by default; the panel can move it) */
         bool hook_borrowed;         /**< SC64SS: the borrowed-RAM engine (the default); false = the resident hook, the Slow motion option (slots and files share one layout, so it switches freely) */
@@ -292,6 +293,7 @@ rom_err_t rom_config_setting_set_cheats (path_t *path, rom_info_t *rom_info, boo
  * @return rom_err_t Error code
  */
 rom_err_t rom_config_setting_set_savestates (path_t *path, rom_info_t *rom_info, bool enabled);
+rom_err_t rom_config_setting_set_savestates_spare (path_t *path, rom_info_t *rom_info, int spare);
 
 /**
  * @brief SC64SS: set the virtual Controller Pak setting for the ROM.

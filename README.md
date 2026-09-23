@@ -13,18 +13,20 @@ information) in the report.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
-New in 1.7: hotkeys and the screenshot button set for every game at once from any
-game's page, an options menu that stays open for the next change, and a fix for the
-Virtual Controller Paks view, which crashed on a pak note with an odd byte in its name.
-1.6 fixed the vertical jitter with the virtual pak on (Tony Hawk's Pro Skater 3, Perfect
-Dark) but for a mild second where those games write to their pak; 1.5 the freeze after a
-load that 1.2 to 1.4 could hit; 1.4 brought ROM autoload back; 1.3 the pak transfers and
-the live port list. The [changelog](CHANGELOG.md) has the details.
+New in 1.8: the list of save-state slots grows on the card as you use it, six empty
+ones always ahead, with the cartridge's slots as a cache, and Set ROM to autoload
+saves the right game from every tab and confirms it. 1.7 set hotkeys for every game at
+once and kept the options menu open; 1.6 fixed the vertical jitter with the virtual pak
+on (Tony Hawk's Pro Skater 3, Perfect Dark) but for a mild second where those games
+write to their pak; 1.5 the freeze after a load that 1.2 to 1.4 could hit; 1.4 brought
+ROM autoload back; 1.3 the pak transfers and the live port list. The
+[changelog](CHANGELOG.md) has the details.
 
 What it adds:
 
 - Save states. Hold L + R + D-pad Up in a game to save, L + R + D-pad Down to load,
-  R + Z + Start for a slot panel with thumbnails. States persist on the SD card.
+  R + Z + Start for a slot panel with thumbnails, as many slots as the card has room
+  for. States persist on the SD card.
   Nothing stays resident in the console's memory, so games that use the whole
   Expansion Pak work too.
 - A virtual Controller Pak. A game that uses one gets a pak that lives on the SD
@@ -42,7 +44,8 @@ What it adds:
 - ROM autoload. Set a game to boot straight from power-on, with everything above
   armed; hold Start while switching on to get the menu back.
 
-It needs an Expansion Pak. 280 of the 298 games I've tried work:
+It needs an Expansion Pak. It is developed and tested on an original N64; I have not
+tried it on the Analogue 3D or the M64. 280 of the 298 games I've tried work:
 [the compatibility list](docs/savestates.md#compatibility).
 
 ![A state loaded from the slot panel](docs/media/preview.gif)

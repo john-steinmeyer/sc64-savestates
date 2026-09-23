@@ -150,7 +150,8 @@ static void ov_disp_range(uint32_t *start, uint32_t *len) {
 /* After a save made with the panel on screen: the slot's copy of the displayed
  * buffer gets the clean frame stashed when the panel opened (cart -> bounce -> slot),
  * so the state never carries the panel while the screen never changes. */
-static uint32_t bounce_buf[2048] __attribute__((aligned(16))) = {0};
+#define bounce_buf bounce                 /* hook.c's 8 KiB bounce: never in use at the same time (the borrowed
+                                           * copies of a save end before this runs, the PNG writer has its own op) */
 static void slot_patch_clean_frame(uint32_t slot_base) {
     if (!stash_len) return;
     uint32_t image = st_hdr.image_len;
@@ -328,52 +329,6 @@ static void thumb_draw(const struct ov_screen *s, uint32_t slot_base, uint32_t x
     }
 }
 
-/* ---- slot probing --------------------------------------------------------------- */
-struct slot_view {
-    uint32_t base;      /* cart PI address */
-    uint32_t state;     /* 0 empty, 1 in SDRAM, 2 on the card only */
-    uint32_t date, time, flags;
-};
-
-static uint32_t slot_hdr_word(uint32_t base, uint32_t off, uint32_t *v) {
-    return pio_read(0xA0000000u | (base + STATE_HDR_OFF + off), v);
-}
-
-static void slot_probe(struct slot_view *v, uint32_t idx) {
-    uint32_t magic = 0, ver = 0, crc1 = 0, crc2 = 0, rc1 = 0, rc2 = 0;
-    v->base = hook_cfg.slots[idx];
-    v->state = 0; v->date = 0; v->time = 0; v->flags = 0;
-    if (v->base == 0) return;
-    pio_read(0xB0000010u, &rc1);
-    pio_read(0xB0000014u, &rc2);
-    slot_hdr_word(v->base, 0x00, &magic);
-    slot_hdr_word(v->base, 0x04, &ver);
-    slot_hdr_word(v->base, 0x14, &crc1);
-    slot_hdr_word(v->base, 0x18, &crc2);
-    if ((magic == STATE_MAGIC) && (ver >= 2u) && (crc1 == rc1) && (crc2 == rc2)) {
-        v->state = 1;
-        slot_hdr_word(v->base, 0x08, &v->flags);
-        slot_hdr_word(v->base, 0x1C, &v->date);
-        slot_hdr_word(v->base, 0x44, &v->time);
-        return;
-    }
-    /* nothing in SDRAM: the card may have it (header sector only) */
-    if ((idx < CFG_SLOTS_MAX) && hook_cfg.sd_sectors[idx] && sd_ensure_init() && sd_load_runs(v->base) &&
-        sd_read_header_sector()) {
-        uint32_t w0 = 0, w1 = 0, w5 = 0, w6 = 0;
-        pio_read(SD_BRAM_SECTOR + 0x00, &w0);
-        pio_read(SD_BRAM_SECTOR + 0x04, &w1);
-        pio_read(SD_BRAM_SECTOR + 0x14, &w5);
-        pio_read(SD_BRAM_SECTOR + 0x18, &w6);
-        if ((w0 == STATE_MAGIC) && (w1 >= 2u) && (w5 == rc1) && (w6 == rc2)) {
-            v->state = 2;
-            pio_read(SD_BRAM_SECTOR + 0x08, &v->flags);
-            pio_read(SD_BRAM_SECTOR + 0x1C, &v->date);
-            pio_read(SD_BRAM_SECTOR + 0x44, &v->time);
-        }
-    }
-}
-
 /* ---- the menu ---------------------------------------------------------------------- */
 static void menu_draw_frame(const struct ov_screen *s, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h) {
     uint32_t sc = s->scale;
@@ -423,19 +378,29 @@ static const char *const speed_names[5] = {"NORMAL", "1/2", "1/4", "1/8", "STEP"
 static const uint32_t speed_divs[5] = {1u, 2u, 4u, 8u, SPEED_STEP};
 static const char *const sound_names[2] = {"PITCH DOWN", "STUTTER"};
 
+/* the empty card slots, one of them (`except`) left out of the count (SLX_NONE: none) */
+static uint32_t card_empties(uint32_t n, uint32_t except) {
+    uint32_t c = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t st = 0;
+        if (i == except) continue;
+        slx_rd(SLX_CARD + 12u * i, &st);
+        if (!(st & 0xFFu)) c++;
+    }
+    return c;
+}
+
 /* Returns 0 = resume the game, 1 = load st_slot. Saves happen inside.
  * Two pages, L or R switches: Slots (states) and Game (speed). */
 static uint32_t menu_run(uint32_t cause, uint32_t mi) {
     struct ov_screen s;
-    struct slot_view slots[CFG_SLOTS_MAX];
     char line[48], title[24];
-    uint32_t n = hook_cfg.slots_n;
-    if (n > MENU_MAX_ROWS) n = MENU_MAX_ROWS;
+    uint32_t n = card_count();
     menu_opens++;
     thumb_capture();                              /* the frame a save from here belongs to */
     ov_screen_read(&s);
     crumb(0x70u, (s.width << 16) | s.vis, (s.scale << 16) | s.height);   /* the panel's view of the screen */
-    if (!ov_screen_ok(&s) || (n == 0)) return 0;
+    if (!ov_screen_ok(&s)) return 0;              /* (n == 0, states off: the Game page still serves) */
     frame_stash();                                /* the clean frame, put back under every save */
     uint32_t sc = s.scale;
     uint32_t x0 = 24u * sc, y0 = 20u * sc, w = s.vis - 48u * sc, h = s.height - 40u * sc;
@@ -453,29 +418,20 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
     ov_text(&s, x0 + 8u * sc, y0 + 8u * sc, "SAVE STATES", white);
     ov_text(&s, x0 + 8u * sc, y0 + 8u * sc + 10u * sc, title, grey);
 
-    /* probe the slots; card-only states are pulled in so their thumbnails can show */
-    uint32_t card = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        slot_probe(&slots[i], i);
-        if (slots[i].state == 2u) card++;
-    }
-    if (card) {
-        menu_footer(&s, x0, y0, w, h, "READING THE CARD...", hi);
-        for (uint32_t i = 0; i < n; i++) {
-            if ((slots[i].state == 2u) && sd_read_slot(slots[i].base)) {
-                slot_probe(&slots[i], i);
-            }
-        }
-    }
-
-    uint32_t cur = hook_cfg.cur_slot < n ? hook_cfg.cur_slot : 0;
+    /* the list is the card's: every file of this game, in a window of MENU_MAX_ROWS rows.
+     * A row's date and time come from the index; the thumbnail from the cart slot holding
+     * the state or, for one on the card only, from its file's head read into the scratch */
+    uint32_t cur = (n && (hook_cfg.cur_slot < n)) ? hook_cfg.cur_slot : 0, top = 0;
     uint32_t prev = 0xFFFFu, confirm = 0, result = 0, redraw = 1, page = 0, grow = 0, exit_after = 0;
-    uint32_t pak_on = (hook_cfg.spare & 4u) ? 1u : 0u, rows = pak_on ? 5u : 4u;   /* the Game page's rows: SPEED, SOUND, EXIT, SUSPEND, PAK */
+    uint32_t pak_on = (hook_cfg.spare & 4u) ? 1u : 0u, rows = pak_on ? 6u : 5u;   /* the Game page's rows: SPEED, SOUND, EXIT, SUSPEND, [PAK,] DELETE */
+    uint32_t gdel = rows - 1u;                    /* the DELETE row */
+    uint32_t thumb_n = SLX_NONE;                  /* the card slot whose head is in the scratch */
+    uint32_t cst = 0;                             /* the highlighted row's state word */
     if (pak_on && !borrowed_mode()) pak_live_from_cfg();
     if (borrowed_mode()) grow = 2u;              /* the Game page's speed rows need the Slow motion option (the resident hook) */
     uint32_t last_move = c0_count();
     const char *note = 0;
-    crumb(0x71u, cur, card);                      /* slots probed, about to draw */
+    crumb(0x71u, cur, n);                         /* about to draw */
     for (;;) {
         if (sd_state == 1u) sd_service();        /* a mirror write may still be streaming */
         if (redraw) {
@@ -486,32 +442,67 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 ov_text(&s, tabx, y0 + 18u * sc, "SLOTS", page ? grey : hi);
                 ov_text(&s, tabx + 7u * sc * 7u, y0 + 18u * sc, "GAME", page ? hi : grey);
             }
+            card_info(cur, &cst, 0, 0);
             if (page == 0) {
-                for (uint32_t i = 0; i < n; i++) {
+                if (cur < top) top = cur;
+                if (cur >= top + MENU_MAX_ROWS) top = cur + 1u - MENU_MAX_ROWS;
+                uint32_t empties = card_empties(n, SLX_NONE);
+                if (n == 0) ov_text(&s, x0 + 8u * sc, y0 + 30u * sc, "  SAVE STATES ARE OFF FOR THIS GAME", grey);
+                for (uint32_t i = 0; i < MENU_MAX_ROWS; i++) {
+                    uint32_t idx = top + i, st = 0, d = 0, t = 0, y = y0 + 30u * sc + i * 14u * sc;
                     char *p = line;
-                    p = ov_cat(p, (i == cur) ? "> " : "  ");
-                    p = ov_dec(p, i + 1u);
+                    if (idx >= n) {
+                        if (n && (idx == n) && !empties) {   /* the list's end with no empty row left */
+                            ov_text(&s, x0 + 8u * sc, y, (hook_cfg.card_flags & 1u) ? "  CARD FULL: NO EMPTY SLOTS" : "  NO EMPTY SLOTS: RELAUNCH FOR MORE", grey);
+                        }
+                        break;
+                    }
+                    card_info(idx, &st, &d, &t);
+                    p = ov_cat(p, (idx == cur) ? "> " : "  ");
+                    if (idx + 1u < 100u) *p++ = ' ';
+                    if (idx + 1u < 10u) *p++ = ' ';
+                    p = ov_dec(p, idx + 1u);
                     p = ov_cat(p, "  ");
-                    if (slots[i].state) {
-                        ov_stamp_text(p, slots[i].date, slots[i].time);
+                    if (st & 0xFFu) {
+                        ov_stamp_text(p, d, t);
+                        if (st & SLX_RESIDENT) ov_cat(p + 16u, " SLOW");   /* saved with Slow motion on */
                     } else {
                         ov_cat(p, "EMPTY");
                     }
-                    ov_text(&s, x0 + 8u * sc, y0 + 30u * sc + i * 14u * sc, line, (i == cur) ? hi : (slots[i].state ? white : grey));
+                    ov_text(&s, x0 + 8u * sc, y, line, (idx == cur) ? hi : ((st & 0xFFu) ? white : grey));
                 }
                 ov_rect(&s, tx - 2u * sc, ty - 2u * sc, (THUMB_W + 4u) * sc, (THUMB_H + 4u) * sc, grey);
-                if (slots[cur].state == 1u && (slots[cur].flags & 2u)) {
-                    thumb_draw(&s, slots[cur].base, tx, ty);
+                uint32_t tsrc = 0;
+                if ((cst & 0xFFu) && (cst & 2u)) {
+                    if (cst & 0xFF00u) {
+                        uint32_t p = ((cst >> 8) & 0xFFu) - 1u;
+                        if ((p < hook_cfg.slots_n) && hook_cfg.slots[p]) tsrc = hook_cfg.slots[p];
+                    }
+                    if (!tsrc) {                          /* on the card only: its head into the scratch */
+                        if (thumb_n != cur) thumb_n = sd_read_head(cur) ? cur : SLX_NONE;
+                        if (thumb_n == cur) tsrc = SLOT_SCRATCH_PI;
+                    }
+                }
+                if (tsrc) {
+                    thumb_draw(&s, tsrc, tx, ty);
                 } else {
                     ov_rect(&s, tx, ty, THUMB_W * sc, THUMB_H * sc, dark);
-                    ov_text(&s, tx + 12u * sc, ty + 26u * sc, slots[cur].state ? "NO IMAGE" : "EMPTY", grey);
+                    ov_text(&s, tx + 12u * sc, ty + 26u * sc, (cst & 0xFFu) ? "NO IMAGE" : "EMPTY", grey);
                 }
-                if (!confirm && ((30u + n * 14u + 30u + 8u) * sc <= h)) {   /* room under the last slot row */
-                    char hk[80], kb[40];
-                    ov_cat(ov_cat(ov_cat(ov_cat(hk, "SAVE "), combo_text(hook_cfg.combo_save, kb)), "  LOAD "), combo_text(hook_cfg.combo_load, kb));
-                    ov_text(&s, x0 + 8u * sc, y0 + h - 30u * sc, hk, grey);   /* clear of the footer's box (h - 18) */
+                if ((30u + MENU_MAX_ROWS * 14u + 30u + 8u) * sc <= h) {   /* room under the last row */
+                    if (confirm == 4u) {
+                        ov_text(&s, x0 + 8u * sc, y0 + h - 30u * sc, "MORE AFTER A RELAUNCH FROM THE MENU", grey);
+                    } else if (confirm == 6u) {
+                        ov_text(&s, x0 + 8u * sc, y0 + h - 30u * sc, "SWITCH IT ON FOR THIS GAME TO LOAD IT", grey);
+                    } else if (!confirm) {
+                        char hk[80], kb[40];
+                        ov_cat(ov_cat(ov_cat(ov_cat(hk, "SAVE "), combo_text(hook_cfg.combo_save, kb)), "  LOAD "), combo_text(hook_cfg.combo_load, kb));
+                        ov_text(&s, x0 + 8u * sc, y0 + h - 30u * sc, hk, grey);   /* clear of the footer's box (h - 18) */
+                    }
                 }
-                const char *foot = confirm ? "OVERWRITE?  A YES   B NO" : "A LOAD  Z SAVE  B CLOSE  > GAME";
+                const char *foot = (confirm == 1u) ? "OVERWRITE?  A YES   B NO" :
+                                   ((confirm == 4u) ? "LAST EMPTY SLOT: SAVE?  A YES  B NO" :
+                                   ((confirm == 6u) ? "SAVED WITH SLOW MOTION ON   B BACK" : "A LOAD  Z SAVE  B CLOSE  > GAME"));
                 menu_footer(&s, x0, y0, w, h, foot, confirm ? red : white);
             } else {
                 char *p;
@@ -531,8 +522,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 }
                 ov_text(&s, x0 + 8u * sc, y0 + 58u * sc, (grow == 2u) ? "> EXIT TO MENU" : "  EXIT TO MENU", (grow == 2u) ? hi : white);
                 p = ov_cat(line, (grow == 3u) ? "> SUSPEND TO SLOT " : "  SUSPEND TO SLOT ");
-                p = ov_dec(p, cur + 1u);
-                ov_cat(p, "");
+                ov_dec(p, cur + 1u);
                 ov_text(&s, x0 + 8u * sc, y0 + 72u * sc, line, (grow == 3u) ? hi : white);
                 if (pak_on) {
                     p = ov_cat(line, (grow == 4u) ? "> PAK       < " : "  PAK       < ");
@@ -545,12 +535,20 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     ov_cat(p, " >");
                     ov_text(&s, x0 + 8u * sc, y0 + 86u * sc, line, (grow == 4u) ? hi : white);
                 }
+                p = ov_cat(line, (grow == gdel) ? "> DELETE SLOT " : "  DELETE SLOT ");
+                ov_dec(p, cur + 1u);
+                ov_text(&s, x0 + 8u * sc, y0 + (pak_on ? 100u : 86u) * sc, line, (grow == gdel) ? hi : ((cst & 0xFFu) ? white : grey));
                 if (confirm == 2u) {
                     menu_footer(&s, x0, y0, w, h, "LEAVE THE GAME?  A YES   B NO", red);
                 } else if (confirm == 3u) {
-                    menu_footer(&s, x0, y0, w, h, slots[cur].state ? "OVERWRITE AND LEAVE?  A YES  B NO" : "SAVE AND LEAVE?  A YES   B NO", red);
+                    menu_footer(&s, x0, y0, w, h, (cst & 0xFFu) ? "OVERWRITE AND LEAVE?  A YES  B NO" : "SAVE AND LEAVE?  A YES   B NO", red);
+                } else if (confirm == 5u) {
+                    p = ov_cat(line, "DELETE SLOT ");
+                    p = ov_dec(p, cur + 1u);
+                    ov_cat(p, "?  A YES   B NO");
+                    menu_footer(&s, x0, y0, w, h, line, red);
                 } else {
-                    uint32_t hy = pak_on ? 106u : 92u;   /* the hint lines, under the last row */
+                    uint32_t hy = pak_on ? 120u : 106u;   /* the hint lines, under the last row */
                     if (speed_div == SPEED_STEP) {
                         char hk[80], kb[40];
                         ov_cat(ov_cat(ov_cat(hk, "TAP "), combo_text(step_button(), kb)), " FOR ONE FRAME");
@@ -563,14 +561,14 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                         ov_text(&s, x0 + 8u * sc, y0 + hy * sc, "BACK TO THE SC64 MENU", grey);
                     } else if (grow == 3u) {
                         ov_text(&s, x0 + 8u * sc, y0 + hy * sc, "THE NEXT LAUNCH RESUMES HERE", grey);
-                    } else if (grow == 4u) {
+                    } else if (pak_on && (grow == 4u)) {
                         ov_text(&s, x0 + 8u * sc, y0 + hy * sc, vpak_in ? "IN: THE GAME SEES THIS PAK IN THE PORT" : "OUT: THE GAME SEES THE REAL SLOT", grey);
+                    } else if (grow == gdel) {
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, (cst & 0xFFu) ? "THE STATE IS GONE, THE SLOT EMPTY AGAIN" : "THE SLOT IS EMPTY ALREADY", grey);
                     }
-                    menu_footer(&s, x0, y0, w, h, ((grow == 2u) || (grow == 3u)) ? "A SELECT   B CLOSE   < SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
+                    menu_footer(&s, x0, y0, w, h, ((grow == 2u) || (grow == 3u) || (grow == gdel)) ? "A SELECT   B CLOSE   < SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
                 }
             }
-            if (note) ov_text(&s, x0 + w - 8u * sc - 7u * sc * 12u, y0 + 8u * sc, note, hi);
-            redraw = 0;
             if (note) ov_text(&s, x0 + w - 8u * sc - 7u * sc * 12u, y0 + 8u * sc, note, hi);
             redraw = 0;
         }
@@ -602,7 +600,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
         if (!confirm && (pressed & 0x0030u)) {   /* L or R: the other page */
             page ^= 1u;
             redraw = 1;
-        } else if (confirm >= 2u) {              /* leaving: yes or no */
+        } else if ((confirm == 2u) || (confirm == 3u)) {   /* leaving: yes or no */
             if (pressed & 0x8000u) {
                 if (confirm == 3u) {
                     confirm = 0;
@@ -618,9 +616,20 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 confirm = 0;
                 redraw = 1;
             }
+        } else if (confirm == 5u) {              /* deleting: yes or no */
+            if (pressed & 0x8000u) {
+                confirm = 0;
+                menu_footer(&s, x0, y0, w, h, "DELETING...", hi);
+                note = card_delete(cur) ? "DELETED     " : "NOT DELETED ";
+                thumb_n = SLX_NONE;
+                redraw = 1;
+            } else if (pressed & 0x4000u) {
+                confirm = 0;
+                redraw = 1;
+            }
         } else if (page == 1u) {
             if (up || down) {
-                if (borrowed_mode()) {                /* EXIT, SUSPEND and PAK only */
+                if (borrowed_mode()) {                /* EXIT, SUSPEND, PAK and DELETE only */
                     uint32_t k = grow - 2u, m = rows - 2u;
                     grow = 2u + (up ? ((k + m - 1u) % m) : ((k + 1u) % m));
                 } else {
@@ -628,14 +637,14 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 }
                 redraw = 1;
             }
-            if ((grow == 4u) && (left || right || (pressed & 0x8000u))) {   /* the pak: out, or in at port 1..4 */
+            if (pak_on && (grow == 4u) && (left || right || (pressed & 0x8000u))) {   /* the pak: out, or in at port 1..4 */
                 uint32_t st = vpak_in ? (vpak_ch + 1u) : 0u;
                 st = left ? ((st + 4u) % 5u) : ((st + 1u) % 5u);
                 pak_live_change(st);
                 if (!pak_live_store()) note = "CART BUSY";
                 redraw = 1;
             }
-            if (((grow == 2u) || (grow == 3u)) && (left || right)) {   /* no value here: the other page */
+            if (((grow == 2u) || (grow == 3u) || (grow == gdel)) && (left || right)) {   /* no value here: the other page */
                 page = 0;
                 redraw = 1;
                 continue;
@@ -650,16 +659,27 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 }
                 redraw = 1;
             } else if (((grow == 2u) || (grow == 3u)) && (pressed & 0x8000u)) {   /* A: exit, or suspend */
+                if ((grow == 3u) && !n) { note = "NO SLOTS    "; redraw = 1; continue; }
                 if ((grow == 3u) && (sd_state == 1u)) { note = "CARD BUSY"; redraw = 1; continue; }
                 confirm = (grow == 2u) ? 2u : 3u;
+                redraw = 1;
+            } else if ((grow == gdel) && (pressed & 0x8000u)) {   /* A: delete the highlighted slot's state */
+                if (!(cst & 0xFFu)) { note = "SLOT EMPTY  "; redraw = 1; continue; }
+                if (sd_state == 1u) { note = "CARD BUSY"; redraw = 1; continue; }
+                confirm = 5u;
                 redraw = 1;
             }
             if (pressed & 0x5000u) {              /* B or Start: close */
                 result = 0;
                 break;
             }
-        } else if (confirm) {
-            if (pressed & 0x8000u) {              /* A: overwrite */
+        } else if (confirm == 6u) {              /* the refusal: back */
+            if (pressed & 0xC000u) {
+                confirm = 0;
+                redraw = 1;
+            }
+        } else if (confirm) {                    /* 1 overwrite, 4 the last empty slot */
+            if (pressed & 0x8000u) {              /* A: go on */
                 confirm = 0;
                 goto do_save;
             }
@@ -668,8 +688,16 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 redraw = 1;
             }
         } else {
-            if (up || down) {
+            if (n && (up || down)) {
                 cur = up ? ((cur + n - 1u) % n) : ((cur + 1u) % n);
+                redraw = 1;
+            }
+            if (n && (pressed & 0x0008u)) {       /* C-up: a page up */
+                cur = (cur >= MENU_MAX_ROWS) ? (cur - MENU_MAX_ROWS) : 0u;
+                redraw = 1;
+            }
+            if (n && (pressed & 0x0004u)) {       /* C-down: a page down */
+                cur = ((cur + MENU_MAX_ROWS) < n) ? (cur + MENU_MAX_ROWS) : (n - 1u);
                 redraw = 1;
             }
             if (left || right) {                  /* the Game page, as L and R */
@@ -681,9 +709,14 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 result = 0;
                 break;
             }
-            if ((pressed & 0x8000u) && (slots[cur].state == 1u)) {   /* A: load */
+            if ((pressed & 0x8000u) && (cst & 0xFFu)) {   /* A: load */
+                if (borrowed_mode() && (cst & SLX_RESIDENT)) { confirm = 6u; redraw = 1; continue; }   /* saved with Slow motion on: it needs it */
                 if (sd_state == 1u) { note = "CARD BUSY"; redraw = 1; continue; }
-                st_slot = slots[cur].base;
+                menu_footer(&s, x0, y0, w, h, (cst & 0xFF00u) ? "LOADING..." : "READING THE CARD...", hi);
+                uint32_t base = card_bind(cur, 1u, 0xFFu);   /* its cart slot; the file read in when it is not there */
+                if (!base) { note = "CARD ERROR  "; redraw = 1; continue; }
+                st_slot = base;
+                st_card = cur;
                 hook_cfg.cur_slot = cur;
                 result = 1;
                 menu_loads++;
@@ -700,9 +733,10 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 }
                 break;
             }
-            if (pressed & 0x2000u) {              /* Z: save */
+            if (n && (pressed & 0x2000u)) {       /* Z: save */
                 if (sd_state == 1u) { note = "CARD BUSY"; redraw = 1; continue; }
-                if (slots[cur].state) { confirm = 1; redraw = 1; continue; }
+                if (cst & 0xFFu) { confirm = 1; redraw = 1; continue; }
+                if (card_empties(n, cur) == 0) { confirm = 4u; redraw = 1; continue; }   /* the last empty slot: say so first */
                 goto do_save;
             }
         }
@@ -714,7 +748,16 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
 do_save:
         {
             menu_footer(&s, x0, y0, w, h, exit_after ? "SAVING, THEN LEAVING..." : "SAVING...", hi);
-            st_slot = slots[cur].base;
+            uint32_t base = card_bind(cur, 0, 0xFFu);   /* a cart slot for it (the least recently used one goes) */
+            if (!base) {
+                note = "NO CART SLOT";
+                exit_after = 0;
+                st_suspend = 0;
+                redraw = 1;
+                continue;
+            }
+            st_slot = base;
+            st_card = cur;
             hook_cfg.cur_slot = cur;
             st_dma_ticks = 0;
             uint32_t r = state_do_save(cause, mi);
@@ -722,11 +765,11 @@ do_save:
             if (r == ST_OK) {
                 slot_patch_clean_frame(st_slot);  /* the state gets the frame under the panel */
                 rom_write_set(0);                 /* before the mirror (see the combo save path) */
-                if (!sd_write_begin(st_slot) && (sd_state == 1u)) {
+                card_set(cur, st_hdr.flags, st_hdr.stamp, st_hdr.stamp_time, st_hdr.image_len);
+                if (!sd_write_card2(cur, st_slot, 0) && (sd_state == 1u)) {
                     sd_pending_slot = st_slot;
                 }
                 menu_saves++;
-                slot_probe(&slots[cur], cur);
                 note = "SAVED       ";
                 if (exit_after) {
                     exit_after = 0;

@@ -2,7 +2,9 @@
 
 Every slot of a game is one file, `sd:/savestates/<checkcode>.st<slot>`, where
 `<checkcode>` is the 16 hex digits of the ROM header's check code (the two CRC
-words at ROM offsets 0x10 and 0x14) and `<slot>` counts from 0. The file is a byte
+words at ROM offsets 0x10 and 0x14) and `<slot>` counts from 0, with no fixed count:
+since 1.8 the files are the game's list of slots, and the menu adds empty ones as
+the used ones grow. The file is a byte
 copy of the start of the state slot in cartridge memory, so the two share one
 layout. Everything is big-endian, as the N64 stores it.
 
@@ -53,6 +55,7 @@ its allocated size. States written by the 0.3.3-ss1.0 build have `image_len` =
 | 0x70 | `checksum` | over the whole header with this word 0; 0 means none |
 | 0x74 | `slot_len` | the slot stride the writer used (informational) |
 | 0x78 | `regions_n` | entries used in the region table (1 in this build: the RSP's memories; 0 in ss1.0 files) |
+| 0x7C | `card_slot` | 1.8 and up: the slot number plus one the state was saved into (0 in earlier files) |
 | 0x80 | `vi[16]` | the VI registers at capture |
 | 0xC0 | CPU context | 32 GPRs, LO, HI, 32 FPRs (64-bit each), Status, EPC, FCR31, EntryHi, then 32 TLB entries of 4 words |
 | 0x4E0 | regions[8] | {kind, offset, length, arg} per entry. Kind 1 is the RSP's memories: 4 KiB DMEM then 4 KiB IMEM at `offset` (0x804000), `length` 0x2000, `arg` the RSP's program counter at capture. Other kinds may come in later versions |

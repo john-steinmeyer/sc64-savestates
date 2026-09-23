@@ -17,15 +17,15 @@
 #include "../../flashcart/flashcart_utils.h"
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 
 
-// SC64SS: one file per save-state slot on the SD card (sd:/savestates/<checkcode>.stN,
-// 8 MiB, allocated once with a fresh-file marker in its first sector; the state's
-// header lives there too, format v2). At every launch the file's run table (its
-// contiguous sector extents) is written into the slot's last 4 KiB (SC64SS_SD_TABLE_OFF)
-// so the hook can mirror saves to it and read them back after a power cycle.
-// cfg[16 + i] receives the sectors the table covers (0 = no file).
+// SC64SS: one file per card slot on the SD card (sd:/savestates/<checkcode>.stN, 8 MiB,
+// allocated once with a fresh-file marker in its first sector; the state's header lives
+// there too, format v2). The list of files is the game's slot list, with no fixed count:
+// see sc64ss_prepare_state_files below.
 #define SC64SS_STATE_FILE_SIZE  (8 * 1024 * 1024)
 #define SC64SS_STATE_FILE_SIZE_B (SC64SS_STATE_IMAGE_OFF + SC64SS_STATE_IMAGE_LEN_B + 0x2000)   /* borrowed mode: head + all 8 MiB + the RSP's memories (hook v10) */
 #define SC64SS_STATE_SECTORS    (SC64SS_SD_FILE_SECTORS)
@@ -110,73 +110,295 @@ static uint32_t sc64ss_slot_table (int64_t rom_size, uint32_t *slots, uint32_t s
     return n;
 }
 
-static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n, bool borrowed) {
-    // one slot layout and one file size for both placements: the Slow motion
-    // option (the resident hook) can be switched on and off without losing a state
-    (void) borrowed;
-    uint32_t file_size = SC64SS_STATE_FILE_SIZE_B;
-    uint32_t file_sectors = SC64SS_SD_FILE_SECTORS_B;
-    uint32_t table_off = SC64SS_SD_TABLE_OFF_B;
-    uint64_t check_code = (uint64_t) menu->load.rom_info.check_code;
-    uint32_t crc1 = (uint32_t) (check_code >> 32);
-    uint32_t crc2 = (uint32_t) (check_code & 0xFFFFFFFFULL);
+// SC64SS: the card slots (1.8). A game's slot list is its files on the card,
+// sd:/savestates/<checkcode>.st<n> for n from 0 with no fixed count; the cart slots
+// (above the ROM, by ROM size) are a cache of them, kept by the hook (hook.c "Card
+// slots"). At launch, here: the files 0..N-1 (missing ones re-made
+// fresh; at least `savestates_spare` empty ones beyond the last used slot; never fewer than
+// the cart slots; empty files past that trimmed), their sector maps packed at
+// SC64SS_SLOT_MAPS_PI ('SLM1', N, N offset words, then the maps), and the index at
+// SC64SS_SLOT_INDEX_PI ('SLX1', N, K, flags, lru; +0x40 the cart table {card slot + 1, lru}
+// per cart slot; +0x80 the card table {state, date, time} per card slot, state = the
+// header's flags | (cart slot + 1) << 8 for a state a cart slot still holds: a leftover in
+// the cart is trusted only when its 4 KiB header equals the file's). cfg[45] = N, cfg[46] =
+// the card slot (+1) to resume, cfg[47] = flags (bit 0 the card is full, bit 1 the list is
+// capped by the map region).
+#ifndef SC64SS_SLOT_INDEX_PI                  // (a hook blob from before the card slots)
+#define SC64SS_SLOT_MAPS_PI     (0x13F82000UL)
+#define SC64SS_SLOT_MAPS_LEN    (0xE000UL)
+#define SC64SS_SLOT_INDEX_PI    (0x13F91000UL)
+#define SC64SS_CARD_SLOTS_MAX   (256UL)
+#endif
+#define SC64SS_SLX_MAGIC        (0x534C5831UL)   /* "SLX1" */
+#define SC64SS_SLM_MAGIC        (0x534C4D31UL)   /* "SLM1" */
+#define SC64SS_CARD_FULL        (1UL)
+#define SC64SS_CARD_CAPPED      (2UL)
+
+static bool sc64ss_file_runs (char *fp, uint32_t *table, uint32_t *total, uint32_t max_sectors);
+static bool sc64ss_fil_runs (FIL *fil, uint32_t *table, uint32_t *total, uint32_t max_sectors);
+
+static void sc64ss_card_name (char *name, size_t len, uint32_t crc1, uint32_t crc2, uint32_t n) {
+    snprintf(name, len, "%08lX%08lX.st%lu", (unsigned long) crc1, (unsigned long) crc2, (unsigned long) n);
+}
+
+// the first `bytes` of a slot file
+static bool sc64ss_card_head (char *fp, uint32_t *head, size_t bytes) {
+    FILE *f = fopen(fp, "rb");
+    if (!f) {
+        return false;
+    }
+    bool ok = (fread(head, 1, bytes, f) == bytes);
+    fclose(f);
+    return ok;
+}
+
+// slot file n, in one visit: made fresh when missing (size < 0) or short (the first release's
+// size), its first sector read into head, a stray file re-marked, and its cluster runs walked
+// into table (runs_ok says whether it fits the table). 0 none (no room), 1 empty (our marker),
+// 2 a state.
+static int sc64ss_card_file (char *fp, uint32_t crc1, uint32_t crc2, uint32_t n, uint32_t *head, uint32_t file_size,
+                             int64_t size, uint32_t *table, uint32_t *total, uint32_t max_sectors, bool *runs_ok) {
+    FIL fil;
+    UINT br = 0;
+    int kind = 1;
+    *runs_ok = false;
+    *total = 0;
+    if ((size >= 0) && (size < (int64_t) file_size)) {
+        remove(fp);
+        debugf("SC64SS: state file %s was too small, remade\n", fp);
+        size = -1;
+    }
+    if (size < 0) {
+        if (file_allocate(fp, file_size)) {
+            debugf("SC64SS: could not allocate %s\n", fp);
+            return 0;
+        }
+        sc64ss_state_file_mark(fp, crc1, crc2, n);
+        debugf("SC64SS: state file %s created\n", fp);
+    }
+    if (f_open(&fil, strip_fs_prefix(fp), FA_READ) != FR_OK) {
+        return 0;
+    }
+    fatfs_fix_file_size(&fil);
+    memset(head, 0, 512);
+    if ((f_read(&fil, head, 512, &br) != FR_OK) || (br != 512)) {
+        f_close(&fil);
+        return 0;
+    }
+    if (head[0] == SC64SS_STATE_MAGIC) {
+        kind = 2;
+    } else if (head[0] != SC64SS_STATE_MARKER) {
+        // a file from before format v2 (header at 7.75 MiB) or anything else that does
+        // not start with our marker or a state: mark it fresh
+        f_close(&fil);
+        sc64ss_state_file_mark(fp, crc1, crc2, n);
+        debugf("SC64SS: state file %s re-marked\n", fp);
+        if (f_open(&fil, strip_fs_prefix(fp), FA_READ) != FR_OK) {
+            return 1;
+        }
+        fatfs_fix_file_size(&fil);
+    }
+    *runs_ok = sc64ss_fil_runs(&fil, table, total, max_sectors);
+    f_close(&fil);
+    return kind;
+}
+
+// card slot i's map into the packed region (offset words first, the maps after them); a map
+// past the region's end caps the list at i
+static void sc64ss_map_pack (uint32_t *maps, uint32_t i, const uint32_t *table, bool runs_ok, uint32_t *off, uint32_t *capped) {
+    if (!runs_ok) {
+        debugf("SC64SS: no run table for state file %lu\n", (unsigned long) i);   // (the hook refuses that slot)
+        return;
+    }
+    uint32_t bytes = 12 + 12 * table[1];
+    if ((*off + bytes) > SC64SS_SLOT_MAPS_LEN) {
+        if (i < *capped) {
+            *capped = i;
+        }
+        return;
+    }
+    memcpy((uint8_t *) maps + *off, table, bytes);
+    maps[2 + i] = *off;
+    *off = (*off + bytes + 15) & ~15UL;
+}
+
+static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_cart, bool borrowed) {
+    (void) borrowed;   // one slot layout and one file size for both placements (Slow motion switches freely)
+    static uint32_t maps[SC64SS_SLOT_MAPS_LEN / 4] __attribute__((aligned(16)));
+    static uint32_t index[1024] __attribute__((aligned(16)));
     static uint32_t table[4 + 3 * SC64SS_SD_RUNS_MAX] __attribute__((aligned(16)));
+    static uint32_t head[128] __attribute__((aligned(16)));
+    static uint32_t fhdr[1024] __attribute__((aligned(16)));
+    static uint32_t chdr[1024] __attribute__((aligned(16)));
+    static uint8_t occ[SC64SS_CARD_SLOTS_MAX];
+    static int64_t sizes[SC64SS_CARD_SLOTS_MAX];
+    const uint32_t file_size = SC64SS_STATE_FILE_SIZE_B, file_sectors = SC64SS_SD_FILE_SECTORS_B;
+    uint64_t check_code = (uint64_t) menu->load.rom_info.check_code;
+    uint32_t crc1 = (uint32_t) (check_code >> 32), crc2 = (uint32_t) (check_code & 0xFFFFFFFFULL);
+    uint32_t spare = menu->load.rom_info.settings.savestates_spare, flags = 0, resume = 0, N = 0, total = 0;
+    uint32_t off = (8 + 4 * SC64SS_CARD_SLOTS_MAX + 15) & ~15UL;   // the maps after the offset words
+    uint32_t capped = SC64SS_CARD_SLOTS_MAX;
+    int last_used = -1, max_n = -1;
+    bool runs_ok = false;
+    char name[48], prefix[24];
+
+    for (uint32_t i = 0; i < SC64SS_SLOTS_MAX; i++) {
+        cfg[16 + i] = 0;               // (1.4 to 1.7 kept a run table per cart slot: none now)
+    }
+    cfg[27] &= ~0xF00UL;               // hook_cfg.spare bits 8..11: a resume pending (the slot itself is cfg[46])
+    cfg[45] = 0;
+    cfg[46] = 0;
+    cfg[47] = 0;
+    if ((spare < 1) || (spare > 64)) {
+        spare = 6;
+    }
+    memset(index, 0, sizeof(index));
+    memset(occ, 0, sizeof(occ));
+    memset(maps, 0, sizeof(maps));
+    maps[0] = SC64SS_SLM_MAGIC;
+    for (uint32_t i = 0; i < SC64SS_CARD_SLOTS_MAX; i++) {
+        sizes[i] = -1;
+    }
     path_t *dir = path_init(menu->storage_prefix, "/savestates");   // the state files at the top of it, the paks in paks/
     if (!directory_exists(path_get(dir))) {
         directory_create(path_get(dir));
     }
-    cfg[27] &= ~0xF00UL;               // hook_cfg.spare bits 8..11: the slot (+1) to resume at boot
-    for (uint32_t i = 0; i < n; i++) {
-        char name[48];
-        uint32_t total = 0;
-        cfg[16 + i] = 0;
-        snprintf(name, sizeof(name), "%08lX%08lX.st%lu", (unsigned long) crc1, (unsigned long) crc2, (unsigned long) i);
+    // the files there: their numbers and sizes, from one walk of the folder
+    snprintf(prefix, sizeof(prefix), "%08lX%08lX.st", (unsigned long) crc1, (unsigned long) crc2);
+    {
+        dir_t entry;
+        int r = dir_findfirst(path_get(dir), &entry);
+        while (r == 0) {
+            if ((entry.d_type == DT_REG) && (strncasecmp(entry.d_name, prefix, 19) == 0)) {
+                char *e = NULL;
+                long v = strtol(entry.d_name + 19, &e, 10);
+                if (e && (e != entry.d_name + 19) && (*e == 0) && (v >= 0) && (v < (long) SC64SS_CARD_SLOTS_MAX)) {
+                    sizes[v] = entry.d_size;
+                    if (v > max_n) {
+                        max_n = (int) v;
+                    }
+                }
+            }
+            r = dir_findnext(path_get(dir), &entry);
+        }
+    }
+    // each of them as it is: a state (its entry from the header), empty, or re-marked; its map packed
+    for (int i = 0; i <= max_n; i++) {
+        sc64ss_card_name(name, sizeof(name), crc1, crc2, (uint32_t) i);
         path_t *file = path_clone(dir);
         path_push(file, name);
-        char *fp = path_get(file);
-        if (file_exists(fp) && (file_get_size(fp) < (int64_t) file_size)) {
-            // a file from the first release (16 KiB shorter)
-            remove(fp);
-            debugf("SC64SS: state file %s was too small, remade\n", fp);
+        int k = sc64ss_card_file(path_get(file), crc1, crc2, (uint32_t) i, head, file_size, sizes[i], table, &total, file_sectors, &runs_ok);
+        path_free(file);
+        if (k == 0) {
+            if (sizes[i] < 0) {
+                flags |= SC64SS_CARD_FULL;         // a missing file could not be re-made: no room
+            }
+            continue;
         }
-        if (!file_exists(fp)) {
-            if (file_allocate(fp, file_size)) {
-                debugf("SC64SS: could not allocate %s\n", fp);
-                path_free(file);
+        sc64ss_map_pack(maps, (uint32_t) i, table, runs_ok, &off, &capped);
+        if (k == 2) {
+            occ[i] = 1;
+            last_used = i;
+            index[32 + 3 * i] = (head[2] & 0xFF) | ((head[3] < SC64SS_STATE_IMAGE_LEN_B) ? 0x10000UL : 0);   // the header's flags; bit 16: saved with Slow motion on (a 7.75 MiB image)
+            index[33 + 3 * i] = head[7];           // stamp (date)
+            index[34 + 3 * i] = head[17];          // stamp_time
+            if (!resume && (head[2] & 4)) {
+                resume = (uint32_t) i + 1;         // a suspended state: the hook loads it once the game is up
+            }
+        }
+    }
+    // the count: at least the cart slots, and `spare` empty slots beyond the last used one
+    uint32_t want = (uint32_t) (last_used + 1) + spare;
+    if (want < n_cart) {
+        want = n_cart;
+    }
+    if (want > SC64SS_CARD_SLOTS_MAX) {
+        want = SC64SS_CARD_SLOTS_MAX;
+    }
+    for (int i = (int) want; i <= max_n; i++) {   // empty files past that give their space back
+        if (!occ[i] && (sizes[i] >= 0)) {
+            sc64ss_card_name(name, sizeof(name), crc1, crc2, (uint32_t) i);
+            path_t *file = path_clone(dir);
+            path_push(file, name);
+            remove(path_get(file));
+            debugf("SC64SS: state file %s trimmed\n", path_get(file));
+            path_free(file);
+        }
+    }
+    N = ((uint32_t) (max_n + 1) < want) ? (uint32_t) (max_n + 1) : want;
+    for (; N < want; N++) {                        // the empties ahead, made fresh, their maps packed
+        sc64ss_card_name(name, sizeof(name), crc1, crc2, N);
+        path_t *file = path_clone(dir);
+        path_push(file, name);
+        int k = sc64ss_card_file(path_get(file), crc1, crc2, N, head, file_size, -1, table, &total, file_sectors, &runs_ok);
+        path_free(file);
+        if (k == 0) {
+            flags |= SC64SS_CARD_FULL;             // no room: the list ends here
+            break;
+        }
+        sc64ss_map_pack(maps, N, table, runs_ok, &off, &capped);
+    }
+    if (N > capped) {                              // the map region is full: the list stops there
+        N = capped;
+        flags |= SC64SS_CARD_CAPPED;
+    }
+    maps[1] = N;
+    if (resume > N) {
+        resume = 0;
+    }
+    // the index: the cart slots' leftovers mapped to their files by header equality
+    index[0] = SC64SS_SLX_MAGIC;
+    index[1] = N;
+    index[2] = n_cart;
+    index[3] = flags;
+    for (uint32_t p = 0; p < n_cart; p++) {
+        uint32_t base = cfg[2 + p];
+        if (!base) {
+            continue;
+        }
+        data_cache_hit_writeback_invalidate(chdr, sizeof(chdr));
+        dma_read(chdr, base, sizeof(chdr));
+        if ((chdr[0] != SC64SS_STATE_MAGIC) || (chdr[1] < 2) || (chdr[5] != crc1) || (chdr[6] != crc2)) {
+            continue;
+        }
+        uint32_t cand = chdr[0x7C / 4];            // the card slot + 1 it went into (0 before 1.8: a search by stamp)
+        for (uint32_t i = 0; i < N; i++) {
+            if (!occ[i] || (index[32 + 3 * i] & 0xFF00)) {
                 continue;
             }
-            sc64ss_state_file_mark(fp, crc1, crc2, i);
-            debugf("SC64SS: state file %s created\n", fp);
-        } else {
-            // a file from before format v2 (header at 7.75 MiB) or anything else that
-            // does not start with our marker or a state: mark it fresh
-            uint32_t head[3] = {0, 0, 0};   // magic, version, flags
-            uint32_t w0 = 0;
-            FILE *f = fopen(fp, "rb");
-            if (f) {
-                if (fread(head, 1, sizeof(head), f) == sizeof(head)) {
-                    w0 = head[0];
-                }
-                fclose(f);
+            if (cand ? (i != (cand - 1)) : ((index[33 + 3 * i] != chdr[7]) || (index[34 + 3 * i] != chdr[17]))) {
+                continue;
             }
-            if ((w0 != SC64SS_STATE_MARKER) && (w0 != SC64SS_STATE_MAGIC)) {
-                sc64ss_state_file_mark(fp, crc1, crc2, i);
-                debugf("SC64SS: state file %s re-marked\n", fp);
-            } else if ((w0 == SC64SS_STATE_MAGIC) && (head[2] & 4) && !(cfg[27] & 0xF00UL)) {
-                cfg[27] |= (i + 1) << 8;   // a suspended state: the hook loads it once the game is up
-                debugf("SC64SS: state file %s resumes at boot\n", fp);
+            sc64ss_card_name(name, sizeof(name), crc1, crc2, i);
+            path_t *file = path_clone(dir);
+            path_push(file, name);
+            bool same = sc64ss_card_head(path_get(file), fhdr, sizeof(fhdr)) && (memcmp(fhdr, chdr, sizeof(fhdr)) == 0);
+            path_free(file);
+            if (!same) {
+                continue;
             }
+            index[16 + 2 * p] = i + 1;
+            index[32 + 3 * i] |= (p + 1) << 8;
+            debugf("SC64SS: cart slot %lu holds card slot %lu\n", (unsigned long) p, (unsigned long) i);
+            break;
         }
-        memset(table, 0, sizeof(table));
-        if (sc64ss_state_file_runs(fp, table, &total, file_sectors)) {
-            data_cache_hit_writeback(table, sizeof(table));
-            dma_write(table, cfg[2 + i] + table_off, sizeof(table));
-            cfg[16 + i] = total;
-        } else {
-            debugf("SC64SS: no run table for %s\n", fp);
-        }
-        path_free(file);
     }
+    for (uint32_t i = N; i < SC64SS_CARD_SLOTS_MAX; i++) {   // entries past the list: none
+        index[32 + 3 * i] = 0;
+        index[33 + 3 * i] = 0;
+        index[34 + 3 * i] = 0;
+    }
+    data_cache_hit_writeback(maps, sizeof(maps));
+    dma_write(maps, SC64SS_SLOT_MAPS_PI, sizeof(maps));
+    data_cache_hit_writeback(index, sizeof(index));
+    dma_write(index, SC64SS_SLOT_INDEX_PI, sizeof(index));
+    cfg[45] = N;
+    cfg[46] = resume;
+    cfg[47] = flags;
+    if (resume) {
+        cfg[27] |= 0x100;
+    }
+    debugf("SC64SS: %lu card slots (%d used, %lu cart slots, flags %lu)\n", (unsigned long) N, last_used + 1, (unsigned long) n_cart, (unsigned long) flags);
     path_free(dir);
 }
 
@@ -204,29 +426,30 @@ static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n,
 #define SC64SS_SHOTS_OWNER_OFF (2048)
 
 // a file's cluster runs as a run table for the hook (SDR1, n, total, n x {sector, file
-// sector, count}), without a list of every sector: a large file fits only when it lies in
-// SC64SS_SD_RUNS_MAX pieces or fewer. false when it is missing or more fragmented than that.
-static bool sc64ss_file_runs (char *fp, uint32_t *table, uint32_t *total, uint32_t max_sectors) {
-    FIL fil;
+// sector, count}) from an open file, without a list of every sector: a seek to the second
+// sector of each cluster names the cluster, and being sector-aligned it costs the file system
+// no data read (a seek into a sector's middle read that sector: 256 reads per slot file,
+// 2048 for the screenshot file, a third of a second each launch per slot). A large file fits
+// only when it lies in SC64SS_SD_RUNS_MAX pieces or fewer: false when more fragmented.
+static bool sc64ss_fil_runs (FIL *fil, uint32_t *table, uint32_t *total, uint32_t max_sectors) {
     uint32_t n = 0;
     bool ok = true;
     *total = 0;
-    if (f_open(&fil, strip_fs_prefix(fp), FA_READ) != FR_OK) {
-        return false;
-    }
-    fatfs_fix_file_size(&fil);
-    FATFS *fs = fil.obj.fs;
+    FATFS *fs = fil->obj.fs;
     uint32_t csize = fs->csize;
-    uint32_t sectors = (uint32_t) (f_size(&fil) / 512);
+    uint32_t sectors = (uint32_t) (f_size(fil) / 512);
     if (sectors > max_sectors) {
         sectors = max_sectors;
     }
+    if (csize < 2) {
+        return false;                             // (a one-sector cluster has no second sector to name it by)
+    }
     for (uint32_t fsec = 0; fsec < sectors; fsec += csize) {
-        if (f_lseek(&fil, ((FSIZE_t) fsec * 512) + 256) != FR_OK) {
+        if (f_lseek(fil, ((FSIZE_t) fsec * 512) + 512) != FR_OK) {
             ok = false;
             break;
         }
-        uint32_t cluster = fil.clust;
+        uint32_t cluster = fil->clust;
         if ((cluster < 2) || (cluster >= fs->n_fatent)) {
             ok = false;
             break;
@@ -247,7 +470,6 @@ static bool sc64ss_file_runs (char *fp, uint32_t *table, uint32_t *total, uint32
         }
         *total += count;
     }
-    f_close(&fil);
     if (!ok || (n == 0)) {
         return false;
     }
@@ -255,6 +477,18 @@ static bool sc64ss_file_runs (char *fp, uint32_t *table, uint32_t *total, uint32
     table[1] = n;
     table[2] = *total;
     return true;
+}
+
+// the same for a file by path; false when it is missing too
+static bool sc64ss_file_runs (char *fp, uint32_t *table, uint32_t *total, uint32_t max_sectors) {
+    FIL fil;
+    if (f_open(&fil, strip_fs_prefix(fp), FA_READ) != FR_OK) {
+        return false;
+    }
+    fatfs_fix_file_size(&fil);
+    bool ok = sc64ss_fil_runs(&fil, table, total, max_sectors);
+    f_close(&fil);
+    return ok;
 }
 
 // the header block as the menu writes it at launch: no shots, the fill point after the block
@@ -667,6 +901,7 @@ static char vpak_file_text[320];
 static bool show_extra_info_message = false;
 static bool show_advanced_info_message = false;
 static bool show_expansion_pak_warning = false;
+static bool show_autoload_message = false;          // SC64SS: the box after Set ROM to autoload
 static component_boxart_t *boxart;
 static char *rom_filename = NULL;
 
@@ -948,19 +1183,21 @@ static void set_tv_type (menu_t *menu, void *arg) {
 static void set_autoload_type (menu_t *menu, void *arg) {
     // SC64SS: the ROM this screen shows, wherever the screen was opened from. The browser's
     // folder and highlighted entry are that ROM only when it was opened from the browser;
-    // from the history or the favourites they are whatever the browser last showed, and
-    // the next boot could not open what was stored.
-    path_t *dir = path_clone(menu->load.rom_path);
-    path_pop(dir);
-    free(menu->settings.rom_autoload_path);
-    menu->settings.rom_autoload_path = strdup(strip_fs_prefix(path_get(dir)));
+    // from the history or the favourites they can be any other file. The path is rebuilt
+    // from the storage prefix first: bookkeeping loads its paths with path_create(), whose
+    // root is the start of the string, so path_pop() on a ROM in the root folder would
+    // leave "sd:".
+    path_t *rom = path_init(menu->storage_prefix, strip_fs_prefix(path_get(menu->load.rom_path)));
     free(menu->settings.rom_autoload_filename);
-    menu->settings.rom_autoload_filename = strdup(path_last_get(menu->load.rom_path));
-    path_free(dir);
-    // FIXME: add a confirmation box here! (press start on reboot)
+    menu->settings.rom_autoload_filename = strdup(path_last_get(rom));
+    path_pop(rom);
+    free(menu->settings.rom_autoload_path);
+    menu->settings.rom_autoload_path = strdup(strip_fs_prefix(path_get(rom)));
+    path_free(rom);
     menu->settings.rom_autoload_enabled = true;
     settings_save(&menu->settings);
     menu->browser.reload = true;
+    show_autoload_message = true;   // SC64SS: say so, the screen shows no other sign of it
 }
 #endif
 
@@ -1273,11 +1510,29 @@ static component_context_menu_t set_tv_type_context_menu = {
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
+// SC64SS: empty slots kept ahead of the last used one (the list of slot files grows as they
+// fill; savestates_spare in the ROM's ini, 6 unless set)
+static int get_rom_savestate_spare_current_selection (menu_t *menu);
+static void set_savestate_spare_option (menu_t *menu, void *arg) {
+    rom_config_setting_set_savestates_spare(menu->load.rom_path, &menu->load.rom_info, (int) (uintptr_t) arg);
+    menu->browser.reload = true;
+}
+static component_context_menu_t set_savestate_spare_menu = {
+    .get_default_selection = get_rom_savestate_spare_current_selection,
+    .list = {
+    { .text = "6 empty slots (default)", .action = set_savestate_spare_option, .arg = (void *) (6), .stay = true},
+    { .text = "12 empty slots", .action = set_savestate_spare_option, .arg = (void *) (12), .stay = true},
+    { .text = "24 empty slots", .action = set_savestate_spare_option, .arg = (void *) (24), .stay = true},
+    { .text = "48 empty slots", .action = set_savestate_spare_option, .arg = (void *) (48), .stay = true},
+    COMPONENT_CONTEXT_MENU_LIST_END,
+}};
+
 static component_context_menu_t set_savestate_options_menu = {
     .get_default_selection = get_rom_savestate_current_selection,
     .list = {
     { .text = "Enabled", .action = set_savestate_option, .arg = (void *) (true), .stay = true},
     { .text = "Disabled", .action = set_savestate_option, .arg = (void *) (false), .stay = true},
+    { .text = "Empty slots to keep", .submenu = &set_savestate_spare_menu },
     COMPONENT_CONTEXT_MENU_LIST_END,
 }};
 
@@ -1344,7 +1599,7 @@ static component_context_menu_t options_context_menu = { .list = {
     { .text = "Set Save Type", .submenu = &set_save_type_context_menu },
     { .text = "Set TV Type", .submenu = &set_tv_type_context_menu },
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    { .text = "Set ROM to autoload", .action = set_autoload_type, .stay = true },
+    { .text = "Set ROM to autoload", .action = set_autoload_type },   // SC64SS: its box takes over
 #endif
     { .text = "Save States", .submenu = &set_savestate_options_menu },
     { .text = "Virtual Controller Pak", .submenu = &set_vpak_options_menu },
@@ -1411,6 +1666,10 @@ static int get_rom_savestate_current_selection (menu_t *menu) {
         (void *) (menu->load.rom_info.settings.savestates_enabled ? true : false));
 }
 
+static int get_rom_savestate_spare_current_selection (menu_t *menu) {
+    return find_menu_item_index_by_arg(&set_savestate_spare_menu, (void *) (uintptr_t) menu->load.rom_info.settings.savestates_spare);
+}
+
 static int get_rom_vpak_current_selection (menu_t *menu) {
     int port = menu->load.rom_info.settings.vpak_enabled ? menu->load.rom_info.settings.vpak_port : 0;
     return find_menu_item_index_by_arg(&set_vpak_options_menu, (void *) (uintptr_t) port);
@@ -1470,6 +1729,14 @@ static void process (menu_t *menu) {
         options_last_row = options_context_menu.row_selected;   // SC64SS: where a page's return reopens it
     }
     if (ui_components_context_menu_process(menu, &options_context_menu)) {
+        return;
+    }
+
+    if (show_autoload_message) {                    // SC64SS: A or B closes the autoload box
+        if (menu->actions.enter || menu->actions.back) {
+            show_autoload_message = false;
+            sound_play_effect(SFX_EXIT);
+        }
         return;
     }
 
@@ -1661,6 +1928,17 @@ static void draw (menu_t *menu, surface_t *d) {
                 "which was not detected.\n\n"
                 "It may not run correctly without one.\n\n"
                 "A: Continue anyway, B: Cancel\n"
+            );
+        }
+
+        if (show_autoload_message) {                 // SC64SS
+            ui_components_messagebox_draw(
+                "Autoload set:\n"
+                "%s\n\n"
+                "This game now starts by itself.\n"
+                "Hold Start while switching the\n"
+                "console on to get the menu back.\n",
+                rom_filename
             );
         }
 
@@ -2203,12 +2481,15 @@ void view_load_rom_init (menu_t *menu) {
         rom_filename = path_last_get(menu->load.rom_path);
     } else
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    if (!menu->settings.rom_autoload_enabled)
+    // SC64SS: only the startup autoload arrives with a load pending and its path set; an
+    // autoload set in this session must not keep an earlier ROM's path for later details.
+    if (!menu->load_pending.rom_file)
 #endif
     {
         if (menu->load.rom_path) {
             rom_info_free_meta(&menu->load.rom_info);
             path_free(menu->load.rom_path);
+            menu->load.rom_path = NULL;
         }
 
         if(menu->load.load_history_id != -1) {
@@ -2229,6 +2510,7 @@ void view_load_rom_init (menu_t *menu) {
         show_advanced_info_message = false;
     }
     show_expansion_pak_warning = false;
+    show_autoload_message = false;
 
     debugf("Load ROM: loading ROM info from %s\n", path_get(menu->load.rom_path));
     rom_err_t err = rom_config_load(menu->load.rom_path, &menu->load.rom_info);
@@ -2236,6 +2518,7 @@ void view_load_rom_init (menu_t *menu) {
         rom_info_free_meta(&menu->load.rom_info);
         path_free(menu->load.rom_path);
         menu->load.rom_path = NULL;
+        menu->load_pending.rom_file = false;    // SC64SS: a failed autoload must not carry into the next details screen
         //disable the attempt at loading the favorite / history
         menu->load.load_history_id = -1;
         menu->load.load_favorite_id = -1;
@@ -2255,7 +2538,9 @@ void view_load_rom_init (menu_t *menu) {
     }
 
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    if (!menu->settings.rom_autoload_enabled) {
+    // SC64SS: the same rule as above: the box art and the options menu are set up for every
+    // details screen except the startup autoload's, which boots at once.
+    if (!menu->load_pending.rom_file) {
 #endif
         current_metadata_image_index = 0;
         boxart = ui_components_boxart_init(menu->storage_prefix, menu->load.rom_info.game_code, menu->load.rom_info.title, IMAGE_BOXART_FRONT);

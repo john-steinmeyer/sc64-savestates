@@ -1,5 +1,37 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.8 (2026-09-22)
+
+- The list of save-state slots grows. It lives on the card, one file per slot with no
+  fixed count, and the cartridge's own slots (by ROM size, as before) hold the states
+  in use: a save goes to the cartridge and to the card right after, a load of a state
+  not in the cartridge reads it from the card first, about a second, and the state
+  used longest ago makes room. Every launch keeps six empty slots beyond the last one
+  used (Empty slots to keep in the Save States options: 6, 12, 24 or 48), gives back
+  empty ones past that, and re-makes any file that is missing. The panel scrolls,
+  eight rows at a time (C-up and C-down page), fetches the thumbnail of a state on the
+  card, asks before the last empty slot is used and says when none is left, and the
+  Game page has Delete slot. Today's files are the first slots, untouched; nothing
+  changes until a game saves past the old count. Asked for by Acurrz.
+- A state saved with Slow motion on is refused with a message when it is asked for with
+  the option off, and the panel marks such states SLOW. Loaded that way, a state saved
+  while the game was busy froze it; with the option on it loads as before. Found while
+  testing the slots on Banjo-Kazooie.
+- Set ROM to autoload saves the game whose page is open. It saved the file browser's
+  folder and highlighted entry, a different file when the page was opened from the
+  History or Favorites tab, and the next start stopped at "Couldn't open ROM file".
+  1.4 to 1.7 stored the game's own folder and name instead, but for a game in the
+  card's root folder opened from History or Favorites that left the prefix alone,
+  and the next boot looked for `sd:/sd:/<name>`. Every case now.
+- After a game was set to autoload, other games' pages opened in the same session
+  showed and booted the autoload game, and after a failed autoload the next page
+  opened would have crashed: the page kept the earlier game's path, or none. Fixed
+  the way rmmh's upstream pull request does.
+- Holding Start while the menu starts, to cancel autoload, then setting a game in the
+  same session freed a string that was never allocated. No harm seen; fixed.
+- A box confirms Set ROM to autoload, with the file name and how to get the menu
+  back (Start held while the console is switched on). Nothing showed before.
+
 ## 0.3.4-ss1.7 (2026-09-19)
 
 - A hotkey can be set for every game at once, the screenshot button included. On a

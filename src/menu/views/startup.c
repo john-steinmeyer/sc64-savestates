@@ -1,5 +1,7 @@
 #include "utils/fs.h"
 #include "views.h"
+#include <stdlib.h>
+#include <string.h>
 
 
 static void draw (menu_t *menu, surface_t *d) {
@@ -17,8 +19,11 @@ void view_startup_init (menu_t *menu) {
 
         if (menu->settings.rom_autoload_enabled && b_held.start) {
             menu->settings.rom_autoload_enabled = false;
-            menu->settings.rom_autoload_path = "";
-            menu->settings.rom_autoload_filename = "";
+            // SC64SS: set_autoload_type() frees these, so they stay heap strings.
+            free(menu->settings.rom_autoload_path);
+            menu->settings.rom_autoload_path = strdup("");
+            free(menu->settings.rom_autoload_filename);
+            menu->settings.rom_autoload_filename = strdup("");
             settings_save(&menu->settings);
         }
     }

@@ -781,6 +781,7 @@ static void extract_rom_info (match_t *match, rom_header_t *rom_header, rom_info
 
     rom_info->settings.cheats_enabled = false;
     rom_info->settings.savestates_enabled = false;
+    rom_info->settings.savestates_spare = 6;
     // SC64SS: the virtual Controller Pak is on by default for the games the database marks as
     // Controller Pak users and off for the rest: a game with no pak use gains
     // nothing from one, a Rumble Pak in port 1 keeps working, and a game that probes the
@@ -1199,6 +1200,8 @@ static void load_rom_config_from_file (path_t *path, rom_info_t *rom_info) {
         // general
         rom_info->settings.cheats_enabled = ini_get_bool(rom_config_ini, "", "cheats_enabled", false);
         rom_info->settings.savestates_enabled = ini_get_bool(rom_config_ini, "", "savestates_enabled", false);
+        int spare = ini_get_int(rom_config_ini, "", "savestates_spare", 6);   // SC64SS: empty slots kept ahead on the card
+        rom_info->settings.savestates_spare = ((spare >= 1) && (spare <= 64)) ? spare : 6;
         rom_info->settings.vpak_enabled = ini_get_bool(rom_config_ini, "", "vpak_enabled", rom_info->features.controller_pak);   // SC64SS: the database's word unless the ini says
         int vpak_port = ini_get_int(rom_config_ini, "", "vpak_port", 1);   // SC64SS: the port the virtual pak sits in at launch
         rom_info->settings.vpak_port = ((vpak_port >= 1) && (vpak_port <= 4)) ? vpak_port : 1;
@@ -1360,6 +1363,15 @@ rom_err_t rom_config_setting_set_cheats (path_t *path, rom_info_t *rom_info, boo
 rom_err_t rom_config_setting_set_savestates (path_t *path, rom_info_t *rom_info, bool enabled) {
     rom_info->settings.savestates_enabled = enabled;
     return save_rom_config_setting_to_file(path, "", "savestates_enabled", enabled, false);
+}
+
+rom_err_t rom_config_setting_set_savestates_spare (path_t *path, rom_info_t *rom_info, int spare) {
+    if ((spare < 1) || (spare > 64)) {
+        spare = 6;
+    }
+    rom_info->settings.savestates_spare = spare;
+    // SC64SS: 6 is the default, so the key goes with it
+    return save_rom_config_setting_to_file(path, "", "savestates_spare", spare, 6);
 }
 
 rom_err_t rom_config_setting_set_vpak (path_t *path, rom_info_t *rom_info, bool enabled) {

@@ -25,7 +25,8 @@ I've tested 298 games so far; 280 work (see
 
 ## What you need
 
-- A SummerCart64.
+- A SummerCart64 in an original N64. That is what this is developed and tested on; I
+  have not tried it on the Analogue 3D or the M64.
 - An Expansion Pak. The top 128 KiB of it is the working room the routine borrows
   during a save or a load (and gives back, byte for byte, before the game runs
   again), so states are not possible on a 4 MiB console.
@@ -33,9 +34,10 @@ I've tested 298 games so far; 280 work (see
   the bigger the ROM, the fewer slots fit, and a 64 MiB ROM leaves no room at all
   (the option refuses to switch on for those, and such a game gets no virtual pak
   either).
-- Free space on the SD card: about 8 MiB per slot per game, allocated the first time
-  a game boots with save states on (48 MiB for a game with six slots), and 32 KiB
-  per game for its virtual pak.
+- Free space on the SD card: 8 MiB per slot per game. A game with save states on
+  keeps six empty slots ready beyond its last used one (48 MiB, made at launch) and
+  the list grows as they fill (see [Slots and the card](#slots-and-the-card)); plus
+  32 KiB per game for its virtual pak.
 
 ## Install
 
@@ -49,7 +51,11 @@ Select the ROM, open its options (the menu you get with the ROM highlighted, the
 same place as "Use Cheats"), choose **Save States**, then **Enabled**. The setting
 is stored in the ROM's `.ini` file next to it (`savestates_enabled=1`), so it stays
 on for that game. It is off until you switch it on, because the first boot with it
-on creates the game's slot files on the card.
+on creates the game's slot files on the card. **Empty slots to keep**, in the same
+submenu, is how many empty slots the list always keeps waiting after the last one
+used: 6 unless you change it, or 12, 24 or 48 for a game where you lay down many
+states in one sitting (`savestates_spare` in the ROM's `.ini`; see [Slots and the
+card](#slots-and-the-card)).
 
 **Virtual Controller Pak** is in the same menu: the port the pak starts in, **Port 1**
 to **Port 4**, or **Off**. It is **on, in port 1, by default for the games the menu's
@@ -66,8 +72,10 @@ game runs: see the panel's Game page below.
 the top 128 KiB of RAM instead of living on the cartridge, which is what lets it hold
 the game between frames: the panel's Game page then offers slow motion and frame step.
 Everything else is the same either way, and the two placements share one slot layout,
-so you can switch it on and off for a game without losing its states (a state saved
-with it on holds the RAM below the routine, 7.75 MiB, and loads either way). The one
+so you can switch it on and off for a game and keep its states, with one rule: a state
+saved with it off loads either way, a state saved with it on (it holds the RAM below
+the routine, 7.75 MiB) needs it on again to load. The panel marks those SLOW and says
+so if you try; switch the option on for the game and launch it again. The one
 cost: games that use every byte of the Expansion Pak have no room for the routine and
 never boot with it on. The menu refuses the option for the ones it knows about (Donkey
 Kong 64, Perfect Dark, Indiana Jones and the Infernal Machine, San Francisco Rush 2049,
@@ -128,12 +136,13 @@ nothing is drawn on screen, and the cartridge LED is your confirmation. After a 
 the LED blinks for a couple of seconds while the state is copied to the SD card; you
 can keep playing meanwhile.
 
-The panel lists the slots with the date and time of each state and a thumbnail of
-the selected one. Up and down (D-pad or stick) pick a slot, which also becomes the
-slot the quick combos use. **A** loads it, **Z** saves into it (an occupied slot
-asks for confirmation), **B** or **Start** closes the panel. States that only exist
-on the SD card (after a power cycle) are read back in when the panel opens or when
-a load asks for them.
+The panel lists every slot of the game with the date and time of each state and a
+thumbnail of the selected one, eight rows at a time: up and down (D-pad or stick)
+move a row, C-up and C-down a page. The selected slot is also the one the quick
+combos use. **A** loads it, **Z** saves into it (an occupied slot asks for
+confirmation, and so does the last empty one, see below), **B** or **Start** closes
+the panel. A state that is not in the cartridge's memory (after a power cycle, or one
+of the many on the card) is read from the card as it is loaded, about a second more.
 
 **L** or **R** switches to the panel's second page, **Game** (so do left and right on the
 slots page, and on the Game page's rows that have no value of their own):
@@ -161,10 +170,34 @@ slots page, and on the Game page's rows that have no value of their own):
   again. That is how a game that wants a Controller Pak to save and a Rumble Pak to
   play gets both: take the pak out when it asks for the Rumble Pak, put it back when
   it asks for the Controller Pak.
+- **Delete slot N**: empties the selected slot, after a confirmation. The state is
+  gone and the slot is free again at once.
 
-How many slots a game gets depends on its ROM size:
+## Slots and the card
 
-| ROM size | Slots |
+The list of slots is on the card, `sd:/savestates/<checkcode>.st<slot>`, one file per
+slot, 8 MiB each, and it grows. A game starts with six empty slots (seven for a ROM of
+4 MiB or less), and every launch from the menu makes sure six empty slots follow the
+last one used, so the list never runs out for long. Use them all up in one sitting and
+the panel says so on its last row (the Z on the last empty one asks first); a relaunch
+from the menu adds six more: Exit to menu on the Game page, the console's reset
+button, or a power cycle, then the game again. **Suspend to slot** is the painless way,
+since it keeps the exact moment and the next launch resumes it, the new slots waiting.
+**Empty slots to keep** in the game's options raises the six for a game where you
+lay down many states in one sitting. Empty slots past that number give their space back at
+the next launch; a deleted state's slot stays, empty, so the numbers never shift. A
+full card gives fewer empty slots than that, and the panel's last row says so;
+deleting states frees their slots at once. Every launch looks at each slot file once,
+about a tenth of a second a file at most: a game with 26 slots takes two seconds longer
+to start than one with six, a game with 200 slots about fifteen.
+
+The cartridge's own memory holds the states in use, as many as fit above the ROM (the
+table below). It is a cache: a save goes there and to the card right after (the LED
+blinks for a couple of seconds; you can keep playing), a load of a state that is not
+there reads it from the card first, about a second, and the state used longest ago
+makes room. The game never notices which.
+
+| ROM size | States held in the cartridge |
 | --- | --- |
 | up to 4 MiB | 7 |
 | 8 and 12 MiB | 6 |
@@ -175,8 +208,8 @@ How many slots a game gets depends on its ROM size:
 | 48 MiB | 1 |
 | 64 MiB | none |
 
-States survive power cycles: each slot is mirrored to
-`sd:/savestates/<checkcode>.st<slot>` on the card. The files are plain copies of
+States survive power cycles, since every slot is its file on the card. The files are
+plain copies of
 the state (a header and the thumbnail, then all 8 MiB of RAM and the RSP's memories;
 see [state-format.md](state-format.md)), so they can be backed up or moved to another
 card. A state is bound to the exact ROM it was made with and is refused for any
@@ -699,6 +732,9 @@ cannot find.
 - Slow motion and frame step need the Slow motion option switched on for the
   game (see the Game page above); with it on, games that use every byte of the
   Expansion Pak do not boot.
+- A state saved with Slow motion on loads only with it on. With it off the panel
+  refuses it and says why (it froze the game before 1.8, in the states saved while
+  the game was busy). A state saved with it off loads either way.
 - A picture kept in the top 128 KiB of RAM (San Francisco Rush 2049's title and
   menus) is partly in the routine's room: the panel does not open on such a screen,
   the screenshot button skips it, and a save or load shows the routine's bytes in the
@@ -774,7 +810,9 @@ This build hangs a second routine off the same path, and keeps it off the consol
 The header of a state goes to the cartridge last, so an interrupted save never
 looks valid, and the copy to the SD card clears the file's header first for the same
 reason. The SD mirror runs in the background in 128 KiB pieces paced to the game's
-own cartridge traffic.
+own cartridge traffic. The list of slots is the card's: at launch the menu hands the
+hook a sector map of every slot file and an index of what each holds, and the
+cartridge's slots cache the states in use, least recently used first out.
 
 Games that clear all of RAM at boot (Ocarina of Time) wipe the gate; a tiny stub
 fetches it again from the cartridge on the next exception. Games whose boot code

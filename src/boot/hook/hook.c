@@ -105,6 +105,8 @@ typedef volatile uint16_t vu16;
 #define ST_BAD_STATE    9u /* v6: state belongs to another ROM */
 #define ST_TIMEOUT      10u /* v6: no clean moment within STATE_WAIT_MAX frames */
 #define ST_NO_ROOM      12u /* a screenshot: no cart space above the last slot (11 = ST_SD_FAIL) */
+#define ST_NEEDS_RESIDENT 13u /* a state saved with Slow motion on (a 7.75 MiB image) asked for with it off: it
+                               * needs the resident hook to load (a mid-thread world resumed borrowed froze) */
 
 /* Cart SDRAM above the ROM (PI addresses). build.sh exports these to the menu
  * (hook_blob.h), which lays the slot table out from the ROM size:
@@ -115,10 +117,16 @@ typedef volatile uint16_t vu16;
  *   0x13F80000 .. 0x13F81000  the screenshot file's run table (SHOT_TABLE_PI, the menu writes it)
  *   0x13F81000 .. 0x13F82000  the screenshot file's header block (SHOT_HDR_PI: the menu writes it at
  *                             launch, the hook keeps its count and entries and copies it to the file)
- *   0x13F82000 .. 0x13F90000  (free)
+ *   0x13F82000 .. 0x13F90000  the card slots' sector maps (SLOT_MAPS_PI: 'SLM1', N, N offset
+ *                             words, then the packed maps; the menu writes them at launch)
  *   0x13F90000 .. 0x13F90010  borrowed-RAM mode: the pak stub's trampoline to the monitor's server (a
  *                             64 KiB boundary: one lui reaches it; pak_stub_place writes it)
- *   0x13F90010 .. 0x13FA0000  (free)
+ *   0x13F90010 .. 0x13F91000  (free)
+ *   0x13F91000 .. 0x13F92000  the card slot index (SLOT_INDEX_PI: the menu writes it at launch
+ *                             from the files, the hook keeps it in the game)
+ *   0x13F92000 .. 0x13F96000  a file's head for the panel's thumbnails; the delete marker sector
+ *                             (SLOT_SCRATCH_PI)
+ *   0x13F96000 .. 0x13FA0000  (free)
  *   0x13FA0000 .. 0x13FA3000  a libdragon ROM's boot: the stub, the patcher's copy, the engine's copy (cheats.h)
  *   0x13FA3000 .. 0x13FA4000  the virtual Controller Pak's block CRCs (VPAK_CRC_PI: a word a 32-byte
  *                             block; the menu computes them at launch, the monitor's write path keeps
@@ -149,6 +157,21 @@ typedef volatile uint16_t vu16;
 #define SHOT_HDR_SECTORS 8u
 #define SHOT_ENTRIES_MAX 508u        /* (4096 - 32) / 8 */
 #define SD_MAGIC_SHOT   0x53484354u  /* "SHCT": the screenshot file's header (the ROM's check code follows) */
+/* Card slots: a game's slot list is its files on the card, one per card slot n, with no
+ * fixed count; the cart slots (hook_cfg.slots, by ROM size) are a cache of them. The menu
+ * writes the sector maps and the index at launch. */
+#define SLOT_MAPS_PI    0x13F82000u  /* 'SLM1', N, N offset words, then the packed maps ('SDR1' each) */
+#define SLOT_MAPS_LEN   0x0000E000u
+#define SLOT_INDEX_PI   0x13F91000u  /* 'SLX1', N, K, flags, the LRU counter; +0x40 the cart table, +0x80 the card table */
+#define SLOT_SCRATCH_PI 0x13F92000u  /* a file's head (16 KiB) for the panel's thumbnails; the delete marker sector */
+#define CARD_SLOTS_MAX  256u
+#define SLX_MAGIC       0x534C5831u  /* "SLX1" */
+#define SLM_MAGIC       0x534C4D31u  /* "SLM1" */
+#define SLX_LRU         0x10u
+#define SLX_CART        0x40u        /* K x {card slot + 1 (0 free), lru} */
+#define SLX_CARD        0x80u        /* N x {state, date, time}: state = the header's flags (0 empty) | (cart slot + 1) << 8 */
+#define SLX_NONE        0xFFFFFFFFu
+#define SLX_RESIDENT    0x10000u     /* the state word's bit 16: a 7.75 MiB image, saved with Slow motion on */
 #define VPAK_PI         0x13FB0000u
 #define VPAK_CRC_PI     0x13FA3000u  /* the block CRC table (monitor.S mp_read; a word a block, 4 KiB) */
 #define VPAK_CTL_PI     0x13FB9000u  /* borrowed mode: the pak's control block (monitor.S PAK_CTL_*): 'VPK1',
@@ -668,7 +691,8 @@ struct state_hdr {                        /* everything a reader needs is in the
     uint32_t reraise_sp, memsize, dma_ticks, wait_frames; /* 0x30 */
     uint32_t hook_version, stamp_time, reserved[6];       /* 0x40: reserved = PI_DRAM, PI_CART, SI_DRAM, DPC_STATUS, SP_STATUS, Count */
     uint32_t hdr_len, image_off, thumb_off, thumb_size;   /* 0x60: the layout, so a reader never assumes it */
-    uint32_t checksum, slot_len, regions_n, spare0;       /* 0x70: checksum over the header with this word 0 (0 = none) */
+    uint32_t checksum, slot_len, regions_n, card_slot;    /* 0x70: checksum over the header with this word 0 (0 = none);
+                                                           * card_slot = the card slot + 1 the state went into (0 before 1.8) */
     uint32_t vi[16];                                      /* 0x80 */
     struct state_ctx ctx;                                 /* 0xC0 */
     struct { uint32_t kind, off, len, arg; } regions[8];  /* 0x4E0: extra regions in the file (none defined yet) */
@@ -698,7 +722,9 @@ extern void state_resume(const struct state_ctx *ctx) __attribute__((noreturn));
 
 static struct state_hdr st_hdr __attribute__((aligned(16))) = {0};     /* initialised: keeps it out of .bss */
 static uint32_t st_pending = 0;      /* STATE_OP_SAVE / STATE_OP_LOAD waiting for a clean interrupt */
-static uint32_t st_slot = 0;         /* cart PI address of the slot */
+static uint32_t st_slot = 0;         /* cart PI address of the slot (0: bound at the moment, card_bind) */
+static uint32_t st_card = 0;         /* the card slot of the pending op */
+static uint32_t st_prefer = 0xFFu;   /* the cart slot a PC's request named by address (0xFF: any) */
 static uint32_t st_seq = 0;
 static uint32_t st_wait = 0;         /* VI frames spent waiting */
 static uint32_t st_dma_ticks = 0;
@@ -716,7 +742,13 @@ static uint32_t st_dbg[12] = {0};   /* seen, not-int, ip, mi, sp, dp, pi/si, cau
 static uint32_t sd_state;
 static uint32_t sd_read_slot(uint32_t slot_base);
 static uint32_t sd_write_begin(uint32_t slot_base);
-static uint32_t sd_write_begin_head(uint32_t slot_base);   /* the header's sectors only */
+static uint32_t sd_write_card2(uint32_t n, uint32_t base, uint32_t head_only);   /* the mirror of a card slot's state (head_only: the header's sectors) */
+static uint32_t card_count(void);
+static uint32_t card_info(uint32_t n, uint32_t *state, uint32_t *date, uint32_t *time);
+static uint32_t card_bind(uint32_t n, uint32_t read, uint32_t prefer);
+static void card_set(uint32_t n, uint32_t flags, uint32_t date, uint32_t time, uint32_t image_len);
+static uint32_t card_of_base(uint32_t base);
+static uint32_t card_map_pi(uint32_t n);
 static uint32_t sd_write_begin_shot(uint32_t len);   /* a screenshot from the frame stash, appended to the screenshot file */
 static void shot_request(void);                              /* the screenshot button was tapped */
 static uint32_t shot_state = 0;      /* 1: a screenshot is asked for (taken at the next fresh frame) */
@@ -870,7 +902,7 @@ static void state_capture(uint32_t cause, uint32_t mi) {
     h->thumb_size = THUMB_BYTES;
     h->slot_len = slot_len_cur();
     h->regions_n = 0;
-    h->spare0 = 0;
+    h->card_slot = 0;
     h->checksum = 0;
     for (uint32_t i = 0; i < 8u; i++) {
         h->regions[i].kind = 0;
@@ -898,6 +930,7 @@ static uint32_t hdr_status(const struct state_hdr *h, uint32_t crc1, uint32_t cr
     if ((h->magic != STATE_MAGIC) || (h->version < 2u)) return ST_NO_STATE;
     if (h->checksum && (hdr_checksum(h) != h->checksum)) return ST_NO_STATE;
     if ((h->rom_crc1 != crc1) || (h->rom_crc2 != crc2)) return ST_BAD_STATE;
+    if (borrowed_mode() && (h->image_len < STATE_IMAGE_LEN_B)) return ST_NEEDS_RESIDENT;   /* saved with Slow motion on */
     if ((h->image_base != STATE_IMAGE_BASE) || (h->image_off < STATE_HDR_LEN) || (h->image_off & 0xFu) ||
         (h->image_len == 0) || (h->image_len & 0xFu) || (h->image_len > STATE_IMAGE_LEN_B) ||
         ((h->image_off + h->image_len) > (slot_len_cur() - 0x1000u))) {
@@ -1117,6 +1150,7 @@ static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
     if (!pi_dma((uint32_t)(uintptr_t)zero_sector, st_slot + STATE_ZERO_OFF, 512u, 1u)) {
         return ST_DMA_FAIL;
     }
+    st_hdr.card_slot = st_card + 1u;
     st_hdr.dma_ticks = st_dma_ticks;
     st_hdr.wait_frames = st_wait;
     st_hdr.checksum = 0;
@@ -1190,7 +1224,7 @@ static uint32_t state_do_load_body(void) {
     pio_read(0xB0000010u, &crc1);
     pio_read(0xB0000014u, &crc2);
     uint32_t st = hdr_status(h, crc1, crc2);
-    if (st != ST_OK) {
+    if ((st == ST_NO_STATE) || (st == ST_BAD_STATE)) {
         /* nothing usable in SDRAM (power cycle, other ROM): the SD file may have it */
         if (!sd_read_slot(st_slot)) {
             return st;
@@ -1200,9 +1234,9 @@ static uint32_t state_do_load_body(void) {
             return ST_DMA_FAIL;
         }
         st = hdr_status(h, crc1, crc2);
-        if (st != ST_OK) {
-            return st;
-        }
+    }
+    if (st != ST_OK) {
+        return st;
     }
     dcache_writeback_all();
     boot_words_copy(0);           /* this boot's engine entry words, put back after the copy */
@@ -1534,7 +1568,7 @@ static void state_resume_flag_clear(void) {
         pi_dma((uint32_t)(uintptr_t)&st_hdr, st_slot + STATE_HDR_OFF, STATE_HDR_LEN, 1u);
         rom_write_set(0);
     }
-    sd_write_begin_head(st_slot);
+    sd_write_card2(st_card, st_slot, 1u);
     crumb(18u, st_slot, sd_state);
 }
 
@@ -1832,13 +1866,20 @@ static void state_service(uint32_t cause) {
         }
         /* a load was chosen: st_slot is set, fall through into the load path */
     } else if (st_pending == STATE_OP_SAVE) {
+        if (!st_slot) st_slot = card_bind(st_card, 0, st_prefer);   /* a cart slot for the card slot */
+        if (!st_slot) {
+            feedback_show("NO SLOT");
+            state_done(ST_NO_STATE);
+            return;
+        }
         thumb_capture();
         uint32_t saved = state_do_save(cause, mi);
         crumb(3u, saved, st_slot);
         if (saved == ST_OK) {
             rom_write_set(0);             /* before the mirror: the cart is busy with that write for
                                            * longer than a command's timeout, so a later "off" is lost */
-            if (!sd_write_begin(st_slot) && (sd_state == 1u)) {
+            card_set(st_card, st_hdr.flags, st_hdr.stamp, st_hdr.stamp_time, st_hdr.image_len);
+            if (!sd_write_card2(st_card, st_slot, 0) && (sd_state == 1u)) {
                 sd_pending_slot = st_slot;    /* the pak's mirror is streaming: this one follows it */
             }
             feedback_show("STATE SAVED");
@@ -1847,6 +1888,14 @@ static void state_service(uint32_t cause) {
         }
         state_done(saved);
         return;
+    }
+    if (!st_slot) {                   /* the combo, a resume or the PC: a cart slot, the file read in */
+        st_slot = card_bind(st_card, 1u, st_prefer);
+        if (!st_slot) {
+            feedback_show("NO STATE");
+            state_done(ST_NO_STATE);
+            return;
+        }
     }
     uint32_t status = state_do_load();
     if (status != ST_OK) {
@@ -1933,13 +1982,16 @@ struct hook_cfg {
                                       * table at SHOT_TABLE_PI, its header block at SHOT_HDR_PI) */
     uint32_t shot_fill;              /* 0xAC: the file's next free sector (SHOT_HDR_SECTORS at launch) */
     uint32_t shot_count;             /* 0xB0: screenshots in it (the menu files them at its next start) */
-    uint32_t spare3[3];              /* 0xB4 */
+    uint32_t card_n;                 /* 0xB4: card slots (files) the index lists; cur_slot counts among them */
+    uint32_t resume_card;            /* 0xB8: the card slot (+1) to resume at boot (spare bit 8 tells the monitor) */
+    uint32_t card_flags;             /* 0xBC: bit 0 the card is full (fewer empty slots than asked), bit 1 the list is
+                                      * capped by the map region */
 };
 struct hook_cfg hook_cfg __attribute__((aligned(16))) = {
     CFG_MAGIC, 7u, {0x10800000u, 0x10FC8000u, 0x11790000u, 0x11F58000u, 0x12720000u, 0x12EE8000u, 0x136B0000u, 0u},
     0x0830u /* L + R + D-pad up */, 0x0430u /* L + R + D-pad down */, 12u, 1u, 0u, 0u, {0},
     0x3010u /* R + Z + Start (L + R + Start is an original controller's stick reset) */, 0u, 1u, 0u, {0u, 0u, 0u, 0u}, 0u, 0u, 0u, 0u, 0u, {0u, 0u, 0u},
-    0x0020u /* L: the frame step */, 0u, 0u, 0u, 0u, {0u, 0u, 0u}};
+    0x0020u /* L: the frame step */, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
 #define CFG_WORDS       48u
 _Static_assert(sizeof(struct hook_cfg) == CFG_WORDS * 4u, "CFG_WORDS");
 /* monitor.S reads these fields from the staged copy by offset */
@@ -1957,6 +2009,9 @@ _Static_assert(__builtin_offsetof(struct hook_cfg, combo_step) == 0xA0u, "menu: 
 _Static_assert(__builtin_offsetof(struct hook_cfg, combo_shot) == 0xA4u, "monitor.S: combo_shot");
 _Static_assert(__builtin_offsetof(struct hook_cfg, shot_sectors) == 0xA8u, "menu: shot_sectors");
 _Static_assert(__builtin_offsetof(struct hook_cfg, shot_fill) == 0xACu, "menu: shot_fill");
+_Static_assert(__builtin_offsetof(struct hook_cfg, card_n) == 0xB4u, "menu: card_n");
+_Static_assert(__builtin_offsetof(struct hook_cfg, resume_card) == 0xB8u, "menu: resume_card");
+_Static_assert(__builtin_offsetof(struct hook_cfg, card_flags) == 0xBCu, "menu: card_flags");
 _Static_assert(__builtin_offsetof(struct hook_cfg, shot_count) == 0xB0u, "menu: shot_count");
 static uint32_t borrowed_mode(void) {
     return (hook_cfg.spare & 0x20u) ? 1u : 0u;   /* hook_cfg.spare bit 5: no resident hook, the monitor borrows */
@@ -2129,10 +2184,21 @@ static void state_queue(uint32_t op) {
     if ((op != STATE_OP_LOAD) && (dbg_unlock_ok == 0)) {
         return;                       /* the cart has never answered */
     }
-    if ((hook_cfg.cur_slot >= hook_cfg.slots_n) || (hook_cfg.slots[hook_cfg.cur_slot] == 0)) {
-        return;                      /* no slot for this ROM (or none configured) */
+    {
+        uint32_t st = 0;
+        if (!card_info(hook_cfg.cur_slot, &st, 0, 0)) {
+            return;                  /* no such card slot (or none configured) */
+        }
+        if ((op == STATE_OP_LOAD) && !(st & 0xFFu)) {
+            return;                  /* nothing saved there */
+        }
+        if ((op == STATE_OP_LOAD) && borrowed_mode() && (st & SLX_RESIDENT)) {
+            return;                  /* saved with Slow motion on: it needs it (the panel says so) */
+        }
     }
-    st_slot = hook_cfg.slots[hook_cfg.cur_slot];
+    st_card = hook_cfg.cur_slot;
+    st_slot = 0;                     /* bound to a cart slot at the moment (state_service) */
+    st_prefer = 0xFFu;
     crumb(1u, op, pad_buttons);
     st_seq = 0;
     st_wait = 0;
@@ -2192,7 +2258,7 @@ static void combo_service(void) {
  * ever written before the file's first sector has been read and found to carry
  * our marker or a state of this ROM, so a wrong table cannot touch anything
  * else on the card. */
-#define SD_TABLE_OFF        0x007C7000u    /* STATE_SLOT_LEN - 0x1000: the run table (menu-written) */
+#define SD_TABLE_OFF        0x007C7000u    /* STATE_SLOT_LEN - 0x1000: the run table's old place (before 1.8: one per cart slot) */
 #define SD_RUNS_MAGIC       0x53445231u    /* "SDR1", then n, total sectors, n x {sector, file_sector, count} */
 #define SD_RUNS_MAX         64u
 #define SD_FILE_SECTORS     0x3E30u        /* sectors of a normal state file: head (16 KiB) + image (7.75 MiB) + the RSP's memories (8 KiB) */
@@ -2213,9 +2279,6 @@ _Static_assert(SD_FILE_SECTORS == (STATE_IMAGE_OFF + STATE_IMAGE_LEN + STATE_RSP
 #define SD_FILE_SECTORS_B   0x4030u        /* borrowed mode: head (16 KiB) + image (8 MiB) + the RSP's memories (8 KiB) */
 _Static_assert(SD_TABLE_OFF_B == STATE_SLOT_LEN_B - 0x1000u, "the run table sits in the borrowed slot's last 4 KiB");
 _Static_assert(SD_FILE_SECTORS_B == (STATE_IMAGE_OFF + STATE_IMAGE_LEN_B + STATE_RSP_LEN) / 512u, "borrowed file size");
-static uint32_t sd_table_off(void) {
-    return slot_len_cur() - 0x1000u;
-}
 _Static_assert((STATE_ZERO_OFF + 512u) <= STATE_IMAGE_OFF, "the zero sector lies in the head");
 
 struct sd_run {
@@ -2338,8 +2401,8 @@ static uint32_t sd_ensure_init(void) {
     return 1;
 }
 
-/* The run table the menu wrote for the slot's file (PIO reads): the runs must tile
- * the file from sector 0 in order. */
+/* A file's run table as the menu wrote it (PIO reads): the runs must tile the file
+ * from sector 0 in order. */
 static uint32_t sd_load_runs_at(uint32_t table_pi) {
     uint32_t table = table_pi | 0xA0000000u;
     uint32_t magic = 0, n = 0, total = 0, next = 0;
@@ -2373,9 +2436,6 @@ static uint32_t sd_load_runs_at(uint32_t table_pi) {
     return n;
 }
 
-static uint32_t sd_load_runs(uint32_t slot_base) {
-    return sd_load_runs_at(slot_base + sd_table_off());
-}
 
 /* the run holding a file sector, or SD_RUNS_MAX */
 static uint32_t sd_run_of(uint32_t file_sector) {
@@ -2401,9 +2461,9 @@ static uint32_t sd_read_header_sector(void) {
     return 1;
 }
 
-/* The file's first sector must carry our fresh-file marker for this ROM and
+/* The file's first sector must carry our fresh-file marker for this ROM and card
  * slot, or a state of this ROM. */
-static uint32_t sd_verify_file(uint32_t slot_idx) {
+static uint32_t sd_verify_card(uint32_t n) {
     uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, crc1 = 0, crc2 = 0;
     if (!sd_read_header_sector()) return 0;
     pio_read(SD_BRAM_SECTOR + 0x0, &w0);
@@ -2417,7 +2477,7 @@ static uint32_t sd_verify_file(uint32_t slot_idx) {
         pio_read(SD_BRAM_SECTOR + 0x4, &w1);
         pio_read(SD_BRAM_SECTOR + 0x8, &w2);
         pio_read(SD_BRAM_SECTOR + 0xC, &w3);
-        if ((w1 == crc1) && (w2 == crc2) && (w3 == slot_idx)) return 1;
+        if ((w1 == crc1) && (w2 == crc2) && (w3 == n)) return 1;
     }
     sd_last_error = 0xDDDD0000u | (w0 >> 16);
     return 0;
@@ -2459,24 +2519,25 @@ static void sd_issue_chunk(void) {
     sd_inflight = 1;
 }
 
-/* Start mirroring a slot to its file (after a save, or on request). */
-static uint32_t sd_write_begin2(uint32_t slot_base, uint32_t head_only) {
-    uint32_t idx = sd_slot_index(slot_base), image_off = 0, image_len = 0;
-    if ((idx >= CFG_SLOTS_MAX) || (hook_cfg.sd_sectors[idx] == 0)) return 0;   /* no file for this slot */
+/* Start mirroring a cart slot's state to card slot n's file (after a save, or on
+ * request); head_only: the header's sectors alone (the resume mark). */
+static uint32_t sd_write_card2(uint32_t n, uint32_t base, uint32_t head_only) {
+    uint32_t image_off = 0, image_len = 0, map = card_map_pi(n);
+    if (!map) return 0;                                   /* no file for this card slot */
     if (sd_state == 1) return 0;
-    crumb(4u, slot_base, hook_cfg.sd_sectors[idx]);
+    crumb(4u, base, n);
     if (!sd_ensure_init()) {
         crumb(13u, 5u, sd_last_error);
         sd_state = 2;
         return 0;
     }
-    if (!sd_load_runs(slot_base)) {
+    if (!sd_load_runs_at(map)) {
         crumb(13u, 6u, sd_last_error);
         sd_state = 2;
         return 0;
     }
     /* the slot's header says how much of it is the state */
-    uint32_t hb = slot_base | 0xA0000000u;
+    uint32_t hb = base | 0xA0000000u;
     if (!pio_read(hb + 0x0Cu, &image_len) || !pio_read(hb + 0x64u, &image_off) ||
         (image_off < STATE_HDR_LEN) || (image_off & 511u) || (image_len == 0)) {
         sd_last_error = 0xCCCC0000u;
@@ -2496,27 +2557,27 @@ static uint32_t sd_write_begin2(uint32_t slot_base, uint32_t head_only) {
         sd_state = 2;
         return 0;
     }
-    if (!sd_verify_file(idx)) {
+    if (!sd_verify_card(n)) {
         crumb(13u, 7u, sd_last_error);
         sd_state = 2;
         return 0;
     }
     if (head_only) {
         /* the header's sectors over the file's, the rest of the file as it is */
-        sd_segs[0].file_sector = 0; sd_segs[0].count = STATE_HDR_LEN / 512u; sd_segs[0].src = slot_base;
+        sd_segs[0].file_sector = 0; sd_segs[0].count = STATE_HDR_LEN / 512u; sd_segs[0].src = base;
         sd_seg_n = 1;
     } else {
         /* the zeroed sector over the file's header first, the image, the rest of the head, the header last */
-        sd_segs[0].file_sector = 0;    sd_segs[0].count = 1;        sd_segs[0].src = slot_base + STATE_ZERO_OFF;
-        sd_segs[1].file_sector = head; sd_segs[1].count = isect;    sd_segs[1].src = slot_base + image_off;
-        sd_segs[2].file_sector = 1;    sd_segs[2].count = head - 1; sd_segs[2].src = slot_base + 512u;
-        sd_segs[3].file_sector = 0;    sd_segs[3].count = 1;        sd_segs[3].src = slot_base;
+        sd_segs[0].file_sector = 0;    sd_segs[0].count = 1;        sd_segs[0].src = base + STATE_ZERO_OFF;
+        sd_segs[1].file_sector = head; sd_segs[1].count = isect;    sd_segs[1].src = base + image_off;
+        sd_segs[2].file_sector = 1;    sd_segs[2].count = head - 1; sd_segs[2].src = base + 512u;
+        sd_segs[3].file_sector = 0;    sd_segs[3].count = 1;        sd_segs[3].src = base;
         sd_seg_n = 4;
     }
     sd_pending_slot = 0;
     sd_seg_i = 0;
     sd_seg_off = 0;
-    sd_slot = slot_base;
+    sd_slot = base;
     sd_inflight = 0;
     sd_gap = 0;
     sd_state = 1;
@@ -2525,8 +2586,10 @@ static uint32_t sd_write_begin2(uint32_t slot_base, uint32_t head_only) {
     return (sd_state == 1) ? 1u : 0u;
 }
 
+/* by cart address: the card slot it holds (the dev mailbox; a mirror that waited for the pak's) */
 static uint32_t sd_write_begin(uint32_t slot_base) {
-    return sd_write_begin2(slot_base, 0);
+    uint32_t n = card_of_base(slot_base);
+    return (n == SLX_NONE) ? 0 : sd_write_card2(n, slot_base, 0);
 }
 
 /* The screenshot file's first sector must carry the fresh marker for this ROM and index:
@@ -2617,9 +2680,6 @@ static void shot_write_failed(void) {
     }
 }
 
-static uint32_t sd_write_begin_head(uint32_t slot_base) {
-    return sd_write_begin2(slot_base, 1u);
-}
 
 /* Every VI tick: collect the in-flight write, start the next chunk. */
 static uint32_t sd_retry = 0;          /* chunks issued again after an error read */
@@ -2691,15 +2751,29 @@ static void sd_service(void) {
     sd_issue_chunk();
 }
 
-/* Read a slot's file back into SDRAM (synchronous, the game is frozen meanwhile).
- * 0 when the file holds no state of this ROM. */
-static uint32_t sd_read_slot(uint32_t slot_base) {
-    uint32_t idx = sd_slot_index(slot_base);
-    uint32_t w0 = 0, ver = 0, image_len = 0, image_off = 0, h1 = 0, h2 = 0, crc1 = 0, crc2 = 0;
-    if ((idx >= CFG_SLOTS_MAX) || (hook_cfg.sd_sectors[idx] == 0)) return 0;
-    if (sd_state == 1) return 0;
-    crumb(9u, slot_base, hook_cfg.sd_sectors[idx]);
-    if (!sd_ensure_init() || !sd_load_runs(slot_base) || !sd_read_header_sector()) {
+/* Sectors [from, to) of the file whose runs are loaded, into cart memory at base. */
+static uint32_t sd_read_range(uint32_t base, uint32_t from, uint32_t to) {
+    for (uint32_t r = 0; r < sd_run_n; r++) {
+        uint32_t f0 = sd_runs[r].file_sector, f1 = f0 + sd_runs[r].count;
+        if (f1 <= from) continue;
+        if (f0 >= to) break;
+        uint32_t a = (f0 > from) ? f0 : from, b = (f1 < to) ? f1 : to;
+        if (!sc64_command_long(SC64_CMD_SD_SECTOR_SET, sd_runs[r].sector + (a - f0), 0, CMD_TIMEOUT_TICKS) ||
+            !sc64_command_long(SC64_CMD_SD_READ, base + a * 512u, b - a, SD_XFER_TIMEOUT_TICKS)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Read card slot n's file into the cart slot at base (synchronous, the game is frozen
+ * meanwhile): sectors 1.. first and the header's sector last, so a cut read leaves no
+ * valid header over a partial image. 0 when the file holds no state of this ROM. */
+static uint32_t sd_read_card(uint32_t n, uint32_t base) {
+    uint32_t w0 = 0, ver = 0, image_len = 0, image_off = 0, h1 = 0, h2 = 0, crc1 = 0, crc2 = 0, map = card_map_pi(n);
+    if (!map || (sd_state == 1u)) return 0;
+    crumb(9u, base, n);
+    if (!sd_ensure_init() || !sd_load_runs_at(map) || !sd_read_header_sector()) {
         crumb(13u, 9u, sd_last_error);
         sd_state = 2;
         return 0;
@@ -2730,19 +2804,231 @@ static uint32_t sd_read_slot(uint32_t slot_base) {
         sd_last_error = 0xCCCE0000u | (total & 0xFFFFu);
         return 0;
     }
-    for (uint32_t r = 0; r < sd_run_n; r++) {
-        if (sd_runs[r].file_sector >= total) break;
-        uint32_t c = sd_runs[r].count;
-        if ((sd_runs[r].file_sector + c) > total) c = total - sd_runs[r].file_sector;
-        if (!sc64_command_long(SC64_CMD_SD_SECTOR_SET, sd_runs[r].sector, 0, CMD_TIMEOUT_TICKS) ||
-            !sc64_command_long(SC64_CMD_SD_READ, slot_base + sd_runs[r].file_sector * 512u, c, SD_XFER_TIMEOUT_TICKS)) {
-            sd_state = 2;
-            return 0;
-        }
+    if (!sd_read_range(base, 1u, total) || !sd_read_range(base, 0, 1u)) {
+        sd_state = 2;
+        return 0;
     }
     sd_reads_done++;
     crumb(10u, sd_reads_done, 0);
     return 1;
+}
+
+/* by cart address (the dev mailbox; the load's fallback) */
+static uint32_t sd_read_slot(uint32_t slot_base) {
+    uint32_t n = card_of_base(slot_base);
+    return (n == SLX_NONE) ? 0 : sd_read_card(n, slot_base);
+}
+
+/* a file's head (the header and the thumbnail) into the scratch region, for the panel */
+static uint32_t sd_read_head(uint32_t n) {
+    uint32_t map = card_map_pi(n);
+    if (!map || (sd_state == 1u) || !sd_ensure_init() || !sd_load_runs_at(map)) return 0;
+    return sd_read_range(SLOT_SCRATCH_PI, 0, STATE_IMAGE_OFF / 512u);
+}
+
+
+/* ---- Card slots ---------------------------------------------------------------
+ * The index (SLOT_INDEX_PI) and the maps (SLOT_MAPS_PI) as the menu wrote them at launch.
+ * The hook keeps the index: a save fills an entry, a delete clears one, and the cart
+ * table says which card slot each cart slot holds (the cache), least recently used
+ * first out. Every write is a PIO store with the cart writable around it. */
+static uint32_t slx_rd(uint32_t off, uint32_t *v) {
+    return pio_read(0xA0000000u | (SLOT_INDEX_PI + off), v);
+}
+static uint32_t slx_wr(uint32_t off, uint32_t v) {
+    return pio_write(0xA0000000u | (SLOT_INDEX_PI + off), v);
+}
+
+/* card slots the index lists (0: no index) */
+static uint32_t card_count(void) {
+    uint32_t magic = 0, n = 0;
+    if (!slx_rd(0, &magic) || (magic != SLX_MAGIC) || !slx_rd(4u, &n)) return 0;
+    if (n > CARD_SLOTS_MAX) n = CARD_SLOTS_MAX;
+    return (n < hook_cfg.card_n) ? n : hook_cfg.card_n;
+}
+
+/* a card slot's entry: state (0 = empty; the cart slot holding it + 1 in bits 8..15), date, time */
+static uint32_t card_info(uint32_t n, uint32_t *state, uint32_t *date, uint32_t *time) {
+    uint32_t off = SLX_CARD + 12u * n;
+    *state = 0;
+    if (date) *date = 0;
+    if (time) *time = 0;
+    if (n >= card_count()) return 0;
+    if (!slx_rd(off, state)) return 0;
+    if (date) slx_rd(off + 4u, date);
+    if (time) slx_rd(off + 8u, time);
+    return 1;
+}
+
+/* the cart address of a card slot's sector map (0 = none) */
+static uint32_t card_map_pi(uint32_t n) {
+    uint32_t magic = 0, m = 0, off = 0;
+    if (!pio_read(0xA0000000u | SLOT_MAPS_PI, &magic) || (magic != SLM_MAGIC) ||
+        !pio_read(0xA0000000u | (SLOT_MAPS_PI + 4u), &m) || (n >= m) ||
+        !pio_read(0xA0000000u | (SLOT_MAPS_PI + 8u + 4u * n), &off) || (off == 0) || (off >= SLOT_MAPS_LEN)) {
+        return 0;
+    }
+    return SLOT_MAPS_PI + off;
+}
+
+/* the card slot a cart slot holds (SLX_NONE: free) */
+static uint32_t cart_card(uint32_t p) {
+    uint32_t v = 0;
+    if ((p >= hook_cfg.slots_n) || !slx_rd(SLX_CART + 8u * p, &v) || (v == 0)) return SLX_NONE;
+    return v - 1u;
+}
+
+/* the card slot behind a cart address: the one it holds, else its own number (the dev
+ * mailbox and a waiting mirror name cart slots by address) */
+static uint32_t card_of_base(uint32_t base) {
+    uint32_t p = sd_slot_index(base);
+    if (p >= CFG_SLOTS_MAX) return SLX_NONE;
+    uint32_t n = cart_card(p);
+    return (n != SLX_NONE) ? n : p;
+}
+
+/* index writes need the cart writable; the caller's setting goes back after */
+static uint32_t slx_wren(void) {
+    uint32_t was = rom_write_enabled;
+    if (!rom_write_set(1u)) return 0xFFu;
+    return was;
+}
+static void slx_wrdone(uint32_t was) {
+    if ((was != 0xFFu) && !was) rom_write_set(0);
+}
+
+/* after a save into card slot n: its entry from the header (the cart slot byte kept); bit 16
+ * says the image is the resident placement's 7.75 MiB (saved with Slow motion on) */
+static void card_set(uint32_t n, uint32_t flags, uint32_t date, uint32_t time, uint32_t image_len) {
+    uint32_t st = 0, off = SLX_CARD + 12u * n;
+    if (n >= card_count()) return;
+    slx_rd(off, &st);
+    uint32_t was = slx_wren();
+    if (was == 0xFFu) return;
+    slx_wr(off, (st & 0xFF00u) | (flags & 0xFFu) | ((image_len < STATE_IMAGE_LEN_B) ? SLX_RESIDENT : 0u));
+    slx_wr(off + 4u, date);
+    slx_wr(off + 8u, time);
+    slx_wrdone(was);
+}
+
+/* The cart slot for card slot n: the one holding it, else a free one, else the least
+ * recently used whose mirror is not in flight or waiting; `prefer` names one (0xFF:
+ * any). The evicted card slot forgets its cart slot and the cart slot's header magic is
+ * zeroed first, so a save or read that stops short leaves no other state's header over
+ * a partial image. With `read` the file is read in. 0 when none can be had. */
+static uint32_t card_bind(uint32_t n, uint32_t read, uint32_t prefer) {
+    uint32_t st = 0, lru = 0, k = hook_cfg.slots_n, p = CFG_SLOTS_MAX, best = SLX_NONE;
+    if (!card_info(n, &st, 0, 0)) return 0;
+    if (k > CFG_SLOTS_MAX) k = CFG_SLOTS_MAX;
+    slx_rd(SLX_LRU, &lru);
+    lru++;
+    if (st & 0xFF00u) {                                   /* in the cart already */
+        p = ((st >> 8) & 0xFFu) - 1u;
+        if ((p < k) && hook_cfg.slots[p]) {
+            uint32_t was = slx_wren();
+            if (was != 0xFFu) {
+                slx_wr(SLX_LRU, lru);
+                slx_wr(SLX_CART + 8u * p + 4u, lru);
+                slx_wrdone(was);
+            }
+            return hook_cfg.slots[p];
+        }
+        p = CFG_SLOTS_MAX;
+    }
+    if ((prefer < k) && hook_cfg.slots[prefer]) {
+        p = prefer;
+    } else {
+        for (uint32_t i = 0; i < k; i++) {
+            uint32_t base = hook_cfg.slots[i], c = 0, stamp = 0;
+            if (!base) continue;
+            if (((sd_state == 1u) && (sd_slot == base)) || (sd_pending_slot == base)) continue;   /* its mirror is streaming */
+            slx_rd(SLX_CART + 8u * i, &c);
+            if (c == 0) {                                 /* free */
+                p = i;
+                break;
+            }
+            slx_rd(SLX_CART + 8u * i + 4u, &stamp);
+            if ((best == SLX_NONE) || (stamp < best)) {
+                best = stamp;
+                p = i;
+            }
+        }
+    }
+    if (p >= k) return 0;
+    uint32_t base = hook_cfg.slots[p], old = cart_card(p);
+    uint32_t was = slx_wren();
+    if (was == 0xFFu) return 0;
+    if ((old != SLX_NONE) && (old != n)) {                /* the evicted card slot forgets its cart slot */
+        uint32_t ost = 0;
+        slx_rd(SLX_CARD + 12u * old, &ost);
+        slx_wr(SLX_CARD + 12u * old, ost & 0xFFu);
+    }
+    pio_write(0xA0000000u | (base + STATE_HDR_OFF), 0);   /* no other state's header over what comes next */
+    slx_wr(SLX_CART + 8u * p, n + 1u);
+    slx_wr(SLX_CART + 8u * p + 4u, lru);
+    slx_wr(SLX_LRU, lru);
+    slx_wr(SLX_CARD + 12u * n, (st & 0xFFu) | ((p + 1u) << 8));
+    slx_wrdone(was);
+    crumb(19u, n, p);
+    if (read && !sd_read_card(n, base)) {
+        was = slx_wren();
+        if (was != 0xFFu) {
+            slx_wr(SLX_CART + 8u * p, 0);
+            slx_wr(SLX_CARD + 12u * n, st & 0xFFu);
+            slx_wrdone(was);
+        }
+        return 0;
+    }
+    return base;
+}
+
+/* Delete card slot n: the fresh marker over its file's first sector (written out here,
+ * the game frozen), the index entry cleared, its cart slot freed. */
+static uint32_t card_delete(uint32_t n) {
+    uint32_t st = 0, crc1 = 0, crc2 = 0, map = card_map_pi(n);
+    if (!map || (sd_state == 1u) || !card_info(n, &st, 0, 0)) return 0;
+    if (!sd_ensure_init() || !sd_load_runs_at(map) || !sd_verify_card(n)) return 0;
+    pio_read(0xB0000010u, &crc1);
+    pio_read(0xB0000014u, &crc2);
+    uint32_t was = slx_wren();
+    if (was == 0xFFu) return 0;
+    uint32_t s = 0xA0000000u | SLOT_SCRATCH_PI;
+    for (uint32_t i = 0; i < 128u; i++) pio_write(s + 4u * i, 0);
+    pio_write(s, SD_MAGIC_FREE);
+    pio_write(s + 4u, crc1);
+    pio_write(s + 8u, crc2);
+    pio_write(s + 12u, n);
+    if (st & 0xFF00u) {                                   /* its cart slot is free again */
+        uint32_t p = ((st >> 8) & 0xFFu) - 1u;
+        if ((p < hook_cfg.slots_n) && hook_cfg.slots[p]) {
+            pio_write(0xA0000000u | (hook_cfg.slots[p] + STATE_HDR_OFF), 0);
+            slx_wr(SLX_CART + 8u * p, 0);
+        }
+    }
+    slx_wr(SLX_CARD + 12u * n, 0);
+    slx_wr(SLX_CARD + 12u * n + 4u, 0);
+    slx_wr(SLX_CARD + 12u * n + 8u, 0);
+    slx_wrdone(was);
+    sd_segs[0].file_sector = 0; sd_segs[0].count = 1u; sd_segs[0].src = SLOT_SCRATCH_PI;
+    sd_seg_n = 1;
+    sd_seg_i = 0;
+    sd_seg_off = 0;
+    sd_slot = 0;
+    sd_inflight = 0;
+    sd_gap = 0;
+    sd_state = 1;
+    sd_issue_chunk();
+    uint32_t t0 = c0_count();
+    while (sd_state == 1u) {
+        sd_service();
+        if ((c0_count() - t0) > (46875u * 5000u)) {
+            sd_fail();
+            break;
+        }
+        exit_wait_ms(1u);
+    }
+    crumb(20u, n, sd_state);
+    return (sd_state == 0) ? 1u : 0u;
 }
 
 
@@ -4213,8 +4499,8 @@ static void borrow_run(void) {
         return;
     }
     if (op == 4u) {                       /* a suspended state: as the resident hook's resume */
-        uint32_t slot = (hook_cfg.spare >> 8) & 0xFu;
-        if (!slot || (slot > hook_cfg.slots_n) || !hook_cfg.slots[slot - 1u]) {
+        uint32_t slot = hook_cfg.resume_card;   /* the card slot + 1 (the menu found the mark in its file) */
+        if (!slot || (slot > card_count())) {
             return;
         }
         hook_cfg.cur_slot = slot - 1u;
@@ -4406,14 +4692,14 @@ void hook_tick(void) {
         vpak_service();              /* the virtual Controller Pak: load once, flush when dirty */
         SEC_END(dbg_sec_vp);
     }
-    if (!resume_done && ((hook_cfg.spare >> 8) & 0xFu) && !st_pending && !snap_active &&
+    if (!resume_done && hook_cfg.resume_card && !st_pending && !snap_active &&
         (((ticks >= 60u) && pad_valid) || (ticks >= 600u))) {
         /* a suspended state (the menu found its mark in the slot's file): load it as the
          * combo would, once the game is up and polling its controller (a second in at
          * least, ten at most), so its hardware is set up */
         resume_done = 1;
-        uint32_t slot = ((hook_cfg.spare >> 8) & 0xFu) - 1u;
-        if ((slot < hook_cfg.slots_n) && hook_cfg.slots[slot]) {
+        uint32_t slot = hook_cfg.resume_card - 1u;
+        if (slot < card_count()) {
             hook_cfg.cur_slot = slot;
             resume_pending = slot + 1u;
             state_queue(STATE_OP_LOAD);
