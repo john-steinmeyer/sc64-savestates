@@ -51,6 +51,7 @@ static void draw (menu_t *menu, surface_t *d) {
         ALIGN_LEFT, VALIGN_TOP,
         "\n"
         "Save states %s, a fork of N64FlashcartMenu %s\n"
+        "\tdeveloped by John Steinmeyer\n"
         "\thttps://github.com/john-steinmeyer/sc64-savestates\n"
         "\t(issues with save states go there, with this line)\n"
         "Build timestamp:  %s\n"

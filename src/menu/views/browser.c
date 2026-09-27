@@ -46,58 +46,123 @@ static bool directory_entry_limit_exceeded = false;
 #define PREVIEW_Y1      (PREVIEW_Y0 + PREVIEW_H)
 #define PREVIEW_LIST_W  (PREVIEW_X0 - 8 - VISIBLE_AREA_X0)
 
-static surface_t *preview_image = NULL;
-static int preview_index = -1;        // the entry the image (or the decode in flight) is for
-static bool preview_loading = false;
-static bool preview_slot = false;     // the highlighted entry is an image: the list leaves the room
-static int preview_rest_index = -1;   // the entry the cursor rests on ...
-static int preview_rest = 0;          // ... and for how many frames
+#define PREVIEW_CACHE   6                 // recent decodes kept: scrolling back over them is instant
 
-static void preview_drop (void) {
+static surface_t *preview_image = NULL;   // the one drawn: a cache entry's surface, or none
+static int preview_shown = -1;            // the entry it belongs to
+static int preview_index = -1;            // the entry whose decode is in flight (-1: none)
+static bool preview_loading = false;
+static bool preview_slot = false;         // the highlighted entry is an image: the list leaves the room
+static int preview_rest_index = -1;       // the entry the cursor rests on ...
+static int preview_rest = 0;              // ... and for how many frames
+static int preview_failed = -1;           // an entry whose decode failed: not tried again
+static struct { int index; surface_t *img; } preview_cache[PREVIEW_CACHE];
+static int preview_cache_next = 0;        // the slot the next decode replaces (the oldest)
+
+static void preview_abort (void) {
     if (preview_loading) {
         png_decoder_abort();
         preview_loading = false;
     }
-    if (preview_image) {
-        surface_free(preview_image);
-        free(preview_image);
-        preview_image = NULL;
-    }
     preview_index = -1;
+}
+
+// everything goes: the entries change under it, or the view ends (the decoder and the memory
+// are the image viewer's then)
+static void preview_drop (void) {
+    preview_abort();
+    for (int i = 0; i < PREVIEW_CACHE; i++) {
+        if (preview_cache[i].img) {
+            surface_free(preview_cache[i].img);
+            free(preview_cache[i].img);
+            preview_cache[i].img = NULL;
+        }
+        preview_cache[i].index = -1;
+    }
+    preview_cache_next = 0;
+    preview_image = NULL;
+    preview_shown = -1;
+    preview_failed = -1;
+}
+
+static surface_t *preview_cached (int index) {
+    for (int i = 0; i < PREVIEW_CACHE; i++) {
+        if (preview_cache[i].img && (preview_cache[i].index == index)) {
+            return preview_cache[i].img;
+        }
+    }
+    return NULL;
 }
 
 static void preview_callback (png_err_t err, surface_t *decoded_image, void *callback_data) {
     (void) callback_data;
     preview_loading = false;
-    preview_image = (err == PNG_OK) ? decoded_image : NULL;   // (a failure: no preview for this entry)
+    if ((err != PNG_OK) || !decoded_image) {   // no preview for this entry; the one up is another's, so down it goes
+        preview_failed = preview_index;
+        preview_index = -1;
+        preview_image = NULL;
+        preview_shown = -1;
+        return;
+    }
+    int k = preview_cache_next;
+    preview_cache_next = (preview_cache_next + 1) % PREVIEW_CACHE;
+    if (preview_cache[k].img) {
+        surface_free(preview_cache[k].img);
+        free(preview_cache[k].img);
+    }
+    preview_cache[k].index = preview_index;
+    preview_cache[k].img = decoded_image;
+    preview_image = decoded_image;
+    preview_shown = preview_index;
+    preview_index = -1;
 }
 
 static void preview_follow (menu_t *menu) {
     entry_t *e = menu->browser.entry;
     int want = (menu->browser.valid && !menu->browser.archive && e && (e->type == ENTRY_TYPE_IMAGE)) ? menu->browser.selected : -1;
     preview_slot = (want >= 0);
-    if (want != preview_index) {
-        preview_drop();                 // (what is there is another entry's)
-    }
     if (want < 0) {
+        preview_abort();
+        preview_image = NULL;
+        preview_shown = -1;
         preview_rest = 0;
         return;
     }
-    if (preview_index == want) {
-        return;                         // shown, in flight, or failed
+    if (preview_shown == want) {
+        if (preview_loading && (preview_index != want)) {
+            preview_abort();            // (a decode for an entry the cursor left)
+        }
+        return;
+    }
+    surface_t *cached = preview_cached(want);
+    if (cached) {
+        preview_abort();
+        preview_image = cached;
+        preview_shown = want;
+        return;
+    }
+    if (preview_loading && (preview_index == want)) {
+        return;                         // in flight: the last thumbnail stays up meanwhile
+    }
+    if (want == preview_failed) {
+        preview_image = NULL;
+        preview_shown = -1;
+        return;
     }
     if (preview_rest_index != want) {
         preview_rest_index = want;
         preview_rest = 0;
     }
-    if (++preview_rest < 8) {
+    if (++preview_rest < 3) {
         return;                         // the cursor has to rest a moment (a fast scroll)
     }
+    preview_abort();                    // whatever else was in flight
     path_t *path = path_clone_push(menu->browser.directory, e->name);
     preview_index = want;
     preview_loading = true;
     if (png_decoder_start(path_get(path), PREVIEW_W, PREVIEW_H, preview_callback, menu) != PNG_OK) {
-        preview_loading = false;        // busy or out of memory: none for this one
+        preview_loading = false;        // busy or out of memory: none for this one, this time
+        preview_index = -1;
     }
     path_free(path);
 }

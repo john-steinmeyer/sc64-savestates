@@ -1,0 +1,92 @@
+/* generated from the analyzer's microcode tables: the display-list encodings the frozen frame
+ * walks, one family per table; edit the Python, never this file */
+#ifndef FROZEN_UCODE_H
+#define FROZEN_UCODE_H
+
+#define FF_F3D_SPNOOP 0x00u
+#define FF_F3D_MTX 0x01u
+#define FF_F3D_MOVEMEM 0x03u
+#define FF_F3D_VTX 0x04u
+#define FF_F3D_DL 0x06u
+#define FF_F3D_SPRITE2D 0x09u
+#define FF_F3D_LOAD_UCODE 0xAFu
+#define FF_F3D_BRANCH_Z 0xB0u
+#define FF_F3D_TRI2 0xB1u
+#define FF_F3D_MODIFYVTX 0xB2u
+#define FF_F3D_RDPHALF_2 0xB3u
+#define FF_F3D_RDPHALF_1 0xB4u
+#define FF_F3D_LINE3D 0xB5u
+#define FF_F3D_CLEARGEOMETRYMODE 0xB6u
+#define FF_F3D_SETGEOMETRYMODE 0xB7u
+#define FF_F3D_ENDDL 0xB8u
+#define FF_F3D_SETOTHERMODE_L 0xB9u
+#define FF_F3D_SETOTHERMODE_H 0xBAu
+#define FF_F3D_TEXTURE 0xBBu
+#define FF_F3D_MOVEWORD 0xBCu
+#define FF_F3D_POPMTX 0xBDu
+#define FF_F3D_CULLDL 0xBEu
+#define FF_F3D_TRI1 0xBFu
+
+#define FF_F3DEX2_SPNOOP 0x00u
+#define FF_F3DEX2_VTX 0x01u
+#define FF_F3DEX2_MODIFYVTX 0x02u
+#define FF_F3DEX2_CULLDL 0x03u
+#define FF_F3DEX2_BRANCH_Z 0x04u
+#define FF_F3DEX2_TRI1 0x05u
+#define FF_F3DEX2_TRI2 0x06u
+#define FF_F3DEX2_QUAD 0x07u
+#define FF_F3DEX2_LINE3D 0x08u
+#define FF_F3DEX2_SPECIAL_3 0xD3u
+#define FF_F3DEX2_SPECIAL_2 0xD4u
+#define FF_F3DEX2_SPECIAL_1 0xD5u
+#define FF_F3DEX2_DMA_IO 0xD6u
+#define FF_F3DEX2_TEXTURE 0xD7u
+#define FF_F3DEX2_POPMTX 0xD8u
+#define FF_F3DEX2_GEOMETRYMODE 0xD9u
+#define FF_F3DEX2_MTX 0xDAu
+#define FF_F3DEX2_MOVEWORD 0xDBu
+#define FF_F3DEX2_MOVEMEM 0xDCu
+#define FF_F3DEX2_LOAD_UCODE 0xDDu
+#define FF_F3DEX2_DL 0xDEu
+#define FF_F3DEX2_ENDDL 0xDFu
+#define FF_F3DEX2_SPNOOP2 0xE0u
+#define FF_F3DEX2_RDPHALF_1 0xE1u
+#define FF_F3DEX2_SETOTHERMODE_L 0xE2u
+#define FF_F3DEX2_SETOTHERMODE_H 0xE3u
+#define FF_F3DEX2_RDPHALF_2 0xF1u
+
+#define FF_RDP_NOOP 0xC0u
+#define FF_RDP_TEXRECT 0xE4u
+#define FF_RDP_TEXRECTFLIP 0xE5u
+#define FF_RDP_LOADSYNC 0xE6u
+#define FF_RDP_PIPESYNC 0xE7u
+#define FF_RDP_TILESYNC 0xE8u
+#define FF_RDP_FULLSYNC 0xE9u
+#define FF_RDP_SETKEYGB 0xEAu
+#define FF_RDP_SETKEYR 0xEBu
+#define FF_RDP_SETCONVERT 0xECu
+#define FF_RDP_SETSCISSOR 0xEDu
+#define FF_RDP_SETPRIMDEPTH 0xEEu
+#define FF_RDP_RDPSETOTHERMODE 0xEFu
+#define FF_RDP_LOADTLUT 0xF0u
+#define FF_RDP_SETTILESIZE 0xF2u
+#define FF_RDP_LOADBLOCK 0xF3u
+#define FF_RDP_LOADTILE 0xF4u
+#define FF_RDP_SETTILE 0xF5u
+#define FF_RDP_FILLRECT 0xF6u
+#define FF_RDP_SETFILLCOLOR 0xF7u
+#define FF_RDP_SETFOGCOLOR 0xF8u
+#define FF_RDP_SETBLENDCOLOR 0xF9u
+#define FF_RDP_SETPRIMCOLOR 0xFAu
+#define FF_RDP_SETENVCOLOR 0xFBu
+#define FF_RDP_SETCOMBINE 0xFCu
+#define FF_RDP_SETTIMG 0xFDu
+#define FF_RDP_SETZIMG 0xFEu
+#define FF_RDP_SETCIMG 0xFFu
+
+#define FF_G_FOG 0x00010000u
+#define FF_MW_SEGMENT 6u
+#define FF_MW_FOG 8u
+#define FF_MW_PERSPNORM 14u
+
+#endif

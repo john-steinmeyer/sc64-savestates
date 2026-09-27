@@ -172,6 +172,7 @@ slots page, and on the Game page's rows that have no value of their own):
   it asks for the Controller Pak.
 - **Delete slot N**: empties the selected slot, after a confirmation. The state is
   gone and the slot is free again at once.
+- **FreeCam here**: the camera on the game as it is right now (see FreeCam below).
 
 ## Slots and the card
 
@@ -250,6 +251,46 @@ frame the game draws, so the message is not in the picture. The PNG holds the pi
 as the console shows them, 24-bit colour, uncompressed (a 320x240 shot is about
 230 KiB, a 640x480 one 920 KiB). With Slow motion off the game holds still for the
 write as well and nothing is drawn on screen; the LED is the confirmation.
+
+## FreeCam
+
+A state is a frozen moment, and its picture was drawn by the game from a list the
+console still holds. FreeCam runs that list again with the camera moved: the world
+stands still and you fly through it. On the panel's slot list, **C-right** on a state
+loads it and opens the camera instead of the game; **B** puts the state back and the
+game carries on from that moment, as a plain load would. Nothing about the state
+changes, and a slot that has not been loaded yet is read from the card first. **FreeCam
+here** on the panel's Game page does the same on the live game, no state needed: the
+game pauses where it is, you fly, **B** and it carries on.
+
+| In FreeCam | What it does |
+| --- | --- |
+| Stick | Look around |
+| C-up, C-down | Forward, back |
+| C-left, C-right | Sideways |
+| D-pad up, down | Up, down |
+| L held | Movement and look four times faster |
+| Z held | Movement and look four times slower, for lining up a shot |
+| A | Everything back: the game's camera, zoom, roll and far plane |
+| R held + A | The lens only back: zoom, roll and far plane; the camera stays put |
+| R tapped | The far plane four times further out, and back (distant scenery some games cut off) |
+| R held, stick forward or back | Zoom in or out (the field of view) |
+| R held, stick left or right | Roll: tilt the picture, or level a banked horizon |
+| D-pad left | The HUD layer off and on (the parts drawn flat on top: health bars, text) |
+| D-pad right | Fog off and on |
+| Start | A screenshot of the view, to the SD card like any other; "SCREENSHOT SAVED" shows for a moment |
+| B | Back to the game |
+
+The frame is the game's own: what it did not draw is not there, so the world ends
+where the game stopped drawing it, and things the game placed for the camera's
+position (a sky box, a fixed backdrop) stay put while you move. A moment where the
+game had not finished a frame, a 2D screen, a game with a rendering engine of its own,
+or a frame spread over several rendering tasks is refused with a message and the state
+loads as usual. Of the games tried so far, Super Mario 64, GoldenEye 007, Mario Kart 64,
+Wave Race 64, Banjo-Tooie, Turok: Dinosaur Hunter, Ocarina of Time, South Park and
+Donkey Kong 64 fly; Jet Force Gemini and Star Wars: Rogue Squadron (their own
+microcode), Perfect Dark (a frame in pieces), Harvest Moon 64 (2D) and Star Wars
+Episode I: Racer in a race (its list there is not the frame on screen) decline.
 
 ## Virtual Controller Pak
 
@@ -887,6 +928,6 @@ rebuilds the blobs that the menu embeds.
   foundation this stands on.
 - [libdragon](https://github.com/DragonMinded/libdragon), which builds the menu and
   the hook.
-- Save states by John Steinmeyer.
+- Save states, FreeCam and the other additions: developed by John Steinmeyer.
 
 Licensed like the menu itself, under the GNU AGPL v3.

@@ -1,9 +1,10 @@
 # Save states for the SummerCart64 (N64FlashcartMenu fork)
 
-A fork of [N64FlashcartMenu](https://github.com/Polprzewodnikowy/N64FlashcartMenu) 0.3.4 by
-Polprzewodnikowy (AGPL-3.0) with save states, a virtual Controller Pak, slow motion,
-screenshots and configurable hotkeys for the SummerCart64. Everything the stock menu
-does, it still does. Problems with the additions belong in this repository's issues,
+Developed by John Steinmeyer: a fork of Polprzewodnikowy's
+[N64FlashcartMenu](https://github.com/Polprzewodnikowy/N64FlashcartMenu) 0.3.4 (AGPL-3.0) that adds save states,
+a free camera on saved moments, a virtual Controller Pak, slow motion, screenshots and configurable hotkeys
+for the SummerCart64.
+Everything the stock menu does, it still does. Problems with the additions belong in this repository's issues,
 not upstream's, with the first line of the Menu information screen (Start, then Menu
 information) in the report.
 
@@ -13,14 +14,15 @@ information) in the report.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
-New in 1.8: the list of save-state slots grows on the card as you use it, six empty
-ones always ahead, with the cartridge's slots as a cache, and Set ROM to autoload
-saves the right game from every tab and confirms it. 1.7 set hotkeys for every game at
-once and kept the options menu open; 1.6 fixed the vertical jitter with the virtual pak
-on (Tony Hawk's Pro Skater 3, Perfect Dark) but for a mild second where those games
-write to their pak; 1.5 the freeze after a load that 1.2 to 1.4 could hit; 1.4 brought
-ROM autoload back; 1.3 the pak transfers and the live port list. The
-[changelog](CHANGELOG.md) has the details.
+New in 1.9: FreeCam, a free camera on any saved moment, or on the game as it stands.
+C-right on a state in the panel (or FreeCam here on its Game page) and you fly through
+the frozen frame, the console redrawing it as you move; B and the game carries on.
+Also a fix for the faint stutter a load left in the sound of GoldenEye 007 and some
+other games, and the menu shows screenshots without the wait. 1.8 let the list of slots
+grow on the card as you use it and fixed Set ROM to autoload; 1.7 set hotkeys for
+every game at once; 1.6 fixed the vertical jitter with the virtual pak on; 1.5 the
+freeze after a load that 1.2 to 1.4 could hit; 1.4 brought ROM autoload back; 1.3 the
+pak transfers and the live port list. The [changelog](CHANGELOG.md) has the details.
 
 What it adds:
 
@@ -37,12 +39,36 @@ What it adds:
   whole paks, with the real pak backed up first.
 - Suspend and resume. Suspend a game to a slot, switch the console off, and the
   next launch of that game picks up where you left it.
+- FreeCam. A free camera on any saved moment, or on the live game: the frozen frame
+  redrawn by the console from wherever you point it, with zoom, roll, the HUD and fog
+  switchable and a screenshot key; the game carries on when you leave.
 - Slow motion and frame step, per game.
 - Screenshots. A button of your choice writes the screen to the SD card as a PNG.
 - Configurable hotkeys, for every game or per game.
 - Homebrew too. Games built with libdragon get save states as well.
 - ROM autoload. Set a game to boot straight from power-on, with everything above
   armed; hold Start while switching on to get the menu back.
+
+FreeCam controls (C-right on a state in the slot panel opens it on that state, FreeCam here on the
+panel's Game page on the live game):
+
+| Key | What it does |
+| --- | --- |
+| Start | A screenshot of the view, saved like any other |
+| Stick | Look around |
+| C-up, C-down | Move forward, back |
+| C-left, C-right | Move sideways |
+| D-pad up, down | Move up, down |
+| D-pad left | HUD layer off and on (health bars, text); some games keep part of theirs |
+| D-pad right | Distance fog off and on |
+| L held | Movement and look four times faster |
+| Z held | Movement and look four times slower, for lining up a shot |
+| R tapped | Far plane four times further out, and back: scenery the game cut off in the distance appears |
+| R held, stick forward or back | Zoom in or out |
+| R held, stick left or right | Roll: tilt the picture |
+| R held + A | Resets the lens only: zoom, roll, far plane; the camera stays put |
+| A | Resets everything back: camera, zoom, roll, far plane |
+| B | Resumes the game from the state, as a normal load would |
 
 It needs an Expansion Pak. It is developed and tested on an original N64; I have not
 tried it on the Analogue 3D or the M64. 280 of the 298 games I've tried work:

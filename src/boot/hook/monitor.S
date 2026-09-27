@@ -1411,6 +1411,7 @@ mp_crc_tab:
     or      \rd, \rd, \tmp
 .endm
 
+
 .section .text.epil, "ax"              # +0x2000 (monitor.ld): the hook's target after a load
 .global mon_epi_load
 mon_epi_load:
@@ -1442,6 +1443,26 @@ mon_epi_load:
     sw      $zero, D_DEFER($k0)         # (no state is taken with a deferral pending: mt_why 7)
     addiu   $t1, $zero, -1
     sw      $t1, D_RESUMED($k0)         # a suspended state is loaded once: no try after a load
+    # the silence the hook found in the loaded world (CTX+0x228: its RDRAM address, +0x22C: the
+    # length, bit 31 = queue it twice): the game's audio driver then finds the AI busy at its
+    # first check after the resume, whenever that comes, and keeps its lead (GoldenEye otherwise
+    # settled into queueing each buffer only after the previous one ended: a gap of a few hundred
+    # microseconds every frame, for good)
+    lui     $k0, %hi(CTX_KSEG1)
+    addiu   $k0, $k0, %lo(CTX_KSEG1)
+    lw      $t1, 0x0228($k0)
+    lw      $t2, 0x022C($k0)
+    beqz    $t1, 2f
+    lui     $t0, 0xA450
+    sw      $t1, 0x0000($t0)            # AI_DRAM_ADDR
+    sll     $t3, $t2, 1
+    srl     $t3, $t3, 1                 # the length without bit 31
+    sw      $t3, 0x0004($t0)            # AI_LEN: the DMA starts
+    bgez    $t2, 2f
+    nop
+    sw      $t1, 0x0000($t0)            # once more, pending behind the first
+    sw      $t3, 0x0004($t0)
+2:
     # the context, as state_resume would load it
     lui     $k0, %hi(CTX_KSEG1)
     addiu   $k0, $k0, %lo(CTX_KSEG1)

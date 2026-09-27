@@ -198,7 +198,8 @@ typedef volatile uint16_t vu16;
 
 /* DIAG: PI-free stage marker in RDRAM, reported by the engine trace on the
  * next exception (1/2/6 are set by entry.S). */
-#define TR_STAGE        (*(vu32 *)0x807FFFFCu)   /* top of RAM: the hook may fill 0x807D0000..0x807F0000 */
+static uint32_t tr_stage_unused;                 /* the C-side stage marks are a dev diagnostic (entry.S keeps its own) */
+#define TR_STAGE        tr_stage_unused
 
 #define CAUSE_EXC_MASK  0x7Cu
 #define CAUSE_IP2_RCP   (1u << 10)
@@ -345,7 +346,7 @@ static uint32_t st_hold_tries = 0;
 static uint32_t hold_clock = 0, hold_count0 = 0, hold_compare0 = 0;
 static uint32_t rsp_loop_pc = 0;     /* the RSP halted by the hold inside its status wait: the wait's first word */
 static uint32_t vi_frz_ended = 0;                    /* a freeze ended in this tick: align the resume */
-static uint32_t dbg_vi_tick = 0, dbg_vi_flip = 0, dbg_vi_wrap = 0, dbg_vi_intr = 0, dbg_vi_lastbit = 0;   /* probes */
+#define DBG_VI(x)
 
 static uint32_t vi_line_bytes(uint32_t ctrl) {
     return (*(vu32 *)(VI_BASE + 0x08u) & 0xFFFu) * (((ctrl & 3u) == 3u) ? 4u : 2u);
@@ -358,7 +359,7 @@ static void vi_fld_record(void) {
         vi_fld_seen = 0;
         return;
     }
-    dbg_vi_tick = VI_CURRENT;
+    DBG_VI(dbg_vi_tick = VI_CURRENT;)
     uint32_t f = (VI_CURRENT & 1u) ^ 1u;
     vi_fld[f][0] = *(vu32 *)(VI_BASE + 0x28u);
     vi_fld[f][1] = *(vu32 *)(VI_BASE + 0x2Cu);
@@ -403,24 +404,24 @@ static uint32_t vi_wait_intr_line(void) {
 static void vi_frz_service(void) {
     if (!vi_frz_active) return;
     uint32_t cur = VI_CURRENT;
-    if ((cur & 1u) != dbg_vi_lastbit) {       /* probe: where in the field the bit flips */
-        dbg_vi_lastbit = cur & 1u;
-        dbg_vi_flip = cur;
-    }
+    DBG_VI(if ((cur & 1u) != dbg_vi_lastbit) { dbg_vi_lastbit = cur & 1u; dbg_vi_flip = cur; })   /* probe: where in the field the bit flips */
     uint32_t line = cur >> 1;
     if (line >= vi_frz_prev) {
         vi_frz_prev = line;
         return;
     }
-    dbg_vi_wrap = (vi_frz_prev << 16) | cur;
+    DBG_VI(dbg_vi_wrap = (vi_frz_prev << 16) | cur;)
     cur = vi_wait_intr_line();
-    dbg_vi_intr = cur;
+    DBG_VI(dbg_vi_intr = cur;)
     vi_frz_prev = cur >> 1;
     vi_frz_aim(cur & 1u);
 }
 
 /* at_vi: the freeze starts at a VI interrupt, where the game would program the
  * field now; otherwise mid-field, already programmed */
+#define AI_DG_EV(i, v)
+#define AI_DG_KICK(v)
+
 static void vi_frz_begin(uint32_t at_vi) {
     uint32_t ctrl = *(vu32 *)VI_BASE;
     vi_frz_frozen = 1;
@@ -429,6 +430,7 @@ static void vi_frz_begin(uint32_t at_vi) {
     vi_frz_active = 0;
     vi_frz_base0 = 0;
     vi_frz_count = 0;
+    AI_DG_EV(5, AI_DG_SNAP(AI_LEN << 8));
     if (!(ctrl & VI_CTRL_SERRATE) || (vi_fld_seen != 3u)) return;
     uint32_t cur = VI_CURRENT;
     uint32_t f_cur = (cur & 1u) ^ (at_vi ? 1u : 0u);    /* the field the registers describe */
@@ -437,7 +439,7 @@ static void vi_frz_begin(uint32_t at_vi) {
         vi_frz_base0 = base - (f_cur ? (uint32_t)vi_fld_lineoff : 0u);
     }
     vi_frz_prev = cur >> 1;
-    dbg_vi_lastbit = cur & 1u;
+    DBG_VI(dbg_vi_lastbit = cur & 1u;)
     vi_frz_active = 1;
     if (at_vi) {
         vi_frz_aim(cur & 1u);
@@ -466,6 +468,7 @@ static void vi_hold_field(void) {
  * (resumed or restored) programs the new field from there */
 static void vi_frz_end(void) {
     if (!vi_frz_frozen) return;
+    AI_DG_EV(6, AI_DG_SNAP((vi_frz_count << 8) | 0x10u));
     rom_write_set(0);                 /* the cart's ROM is read-only again for the game */
     if ((*(vu32 *)VI_BASE) & 3u) {       /* VI on: bounded wait for the counter to wrap */
         uint32_t t0 = c0_count(), prev = VI_CURRENT >> 1;
@@ -558,17 +561,8 @@ static uint32_t pio_write(uint32_t kseg1_addr, uint32_t value) {
  * work, a re-entered tick), never per frame. */
 #define CRUMB_BASE      0xF40u
 #define CRUMB_MAGIC     0x53544731u /* "STG1" */
-static uint32_t crumb_count = 0;
 static uint32_t reentry_marked = 0;
-static void crumb(uint32_t stage, uint32_t a, uint32_t b) {
-    crumb_count++;
-    pio_write(BRAM_BASE + CRUMB_BASE + 0x00, CRUMB_MAGIC);
-    pio_write(BRAM_BASE + CRUMB_BASE + 0x04, stage);
-    pio_write(BRAM_BASE + CRUMB_BASE + 0x08, crumb_count);
-    pio_write(BRAM_BASE + CRUMB_BASE + 0x0C, a);
-    pio_write(BRAM_BASE + CRUMB_BASE + 0x10, b);
-    pio_write(BRAM_BASE + CRUMB_BASE + 0x14, c0_count());
-}
+#define crumb(stage, a, b) ((void)0)     /* the stage crumbs are read with the PC tooling only */
 
 
 /* Always replay the unlock sequence (idempotent when already unlocked, and
@@ -737,7 +731,7 @@ static uint64_t st_sync_cmd[2] __attribute__((aligned(16))) = {0xE90000000000000
 /* a few samples of silence: played after a load so the AI raises an interrupt for the restored world */
 static uint64_t st_ai_silence[2] __attribute__((aligned(16))) = {0, 0};
 /* why the clean moment is not found: counters since the request was queued, last register values */
-static uint32_t st_dbg[12] = {0};   /* seen, not-int, ip, mi, sp, dp, pi/si, cause, status, mi_val, sp_val, dp_val */
+#define ST_DBG(x)                   /* (the PC reads them through the development mailbox only) */
 /* SD mirror (defined after the trigger block) */
 static uint32_t sd_state;
 static uint32_t sd_read_slot(uint32_t slot_base);
@@ -784,9 +778,15 @@ static void feedback_tick(void);
 static void feedback_show(const char *text);
 static void feedback_reset(uint32_t origin, uint32_t width);
 static uint32_t frame_stash(void);
+static void slot_patch_clean_frame(uint32_t slot_base);
 static void ov_disp_range(uint32_t *start, uint32_t *len);
 static void feedback_service(void);
 #define STATE_OP_MENU   9u
+static uint32_t st_view = 0, st_view_done = 0, st_view_status = 0;   /* a load followed by the frozen-frame viewer, then the load again */
+static uint32_t st_view_live = 0;     /* the live game: a save into a scratch cart slot first, the same after */
+static uint32_t view_run(void);
+static uint32_t cart_scratch_take(void);
+static void cart_scratch_drop(uint32_t base);
 static uint32_t image_len(void);
 static uint32_t image_len_max(void);
 static uint32_t slot_len_cur(void);
@@ -874,6 +874,7 @@ static void state_capture(uint32_t cause, uint32_t mi) {
     uint32_t clk_compare = vi_frz_frozen ? frz_compare0 : c0_compare();
     h->compare_delta = clk_compare - clk_count;
     h->mi_mask = MI_INTR_MASK & 0x3Fu;
+    AI_DG_EV(7, AI_DG_SNAP((AI_LEN << 8) | 0x20u));
     h->reraise_sp = st_hold ? st_hold : ((mi == MI_INTR_SP) ? RR_SP : ((mi == MI_INTR_DP) ? RR_DP : 0u));
     h->memsize = *(vu32 *)0x80000318u;
     h->hook_version = HOOK_VERSION;
@@ -941,7 +942,7 @@ static uint32_t hdr_status(const struct state_hdr *h, uint32_t crc1, uint32_t cr
     return ST_OK;
 }
 
-static uint32_t zero_sector[128] __attribute__((aligned(16))) = {0};
+static uint32_t bounce[0x2000u / 4u] __attribute__((aligned(16)));   /* (defined below; the save zeroes its head for the mirror's sector) */
 
 /* the RSP's memories, one 4 KiB half at a time through this buffer (the RSP is halted
  * at any moment a save or a load takes, so the CPU may touch them) */
@@ -1145,9 +1146,14 @@ static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
         st_hdr.regions[0].arg = rsp_loop_pc ? rsp_loop_pc : SP_PC_REG;   /* v12: a status wait resumes from its first word */
         st_hdr.regions_n = 1u;
     }
-    /* the head: thumbnail, the zeroed sector for the mirror, then the header last */
+    /* the head: thumbnail, the zeroed sector for the mirror (the bounce, idle here, zeroed:
+     * a sector of zeros of its own cost the blob 512 bytes), then the header last */
     thumb_store(st_slot);
-    if (!pi_dma((uint32_t)(uintptr_t)zero_sector, st_slot + STATE_ZERO_OFF, 512u, 1u)) {
+    for (uint32_t i = 0; i < 128u; i++) {
+        ((vu32 *)bounce)[i] = 0;
+    }
+    dcache_writeback_all();
+    if (!pi_dma((uint32_t)(uintptr_t)bounce, st_slot + STATE_ZERO_OFF, 512u, 1u)) {
         return ST_DMA_FAIL;
     }
     st_hdr.card_slot = st_card + 1u;
@@ -1294,6 +1300,37 @@ static uint32_t state_do_load(void) {
     return r;
 }
 
+/* ---- Silence for the audio interface after a load -------------------------------
+ * A game's audio driver that finds the AI idle at its first check after the resume can
+ * settle into queueing each buffer only after the previous one ended (GoldenEye: a two-
+ * field buffer per frame, a gap of a few hundred microseconds every frame, for good).
+ * With the AI busy at that check it tops up as usual and keeps its lead. The load's
+ * silence must therefore outlast the resume and the game's first frame: 16 KiB (93 ms
+ * at 22 kHz, 46 ms at 44 kHz) read from a block of zeros in the loaded world's own RAM,
+ * the middle of the longest run of zero blocks (sampled, then the pick verified whole),
+ * outside the low 64 KiB, the hook's home and the half megabyte either side of the displayed
+ * frame (a black frame is zeros too, and the game draws there). 0 = none found. */
+#define AI_ZBLK         0x4000u
+static uint32_t ai_zsrc = 0;         /* the block of the last load (physical; 0 = none) */
+static uint32_t ai_silence_find(void) {
+    uint32_t b, k, best = 0, best_end = 0, run = 0;
+    uint32_t fb = st_hdr.vi[1] & 0x00FFFFFFu;   /* the displayed frame: the buffers around it are drawn into */
+    for (b = 0x00010000u; b < 0x007D0000u; b += AI_ZBLK) {
+        uint32_t z = 0;
+        if (((b + AI_ZBLK) > (fb - 0x80000u)) && (b < (fb + 0x80000u))) { run = 0; continue; }
+        for (k = 0; k < AI_ZBLK; k += AI_ZBLK / 32u) z |= *(vu32 *)(0xA0000000u + b + k);
+        if (z) { run = 0; continue; }
+        run++;
+        if (run > best) { best = run; best_end = b + AI_ZBLK; }
+    }
+    if (!best) return 0;
+    b = best_end - ((best + 1u) / 2u) * AI_ZBLK;
+    for (k = 0; k < AI_ZBLK; k += 4u) {
+        if (*(vu32 *)(0xA0000000u + b + k)) return 0;
+    }
+    return b;
+}
+
 /* The bits that live outside RAM, then the pending interrupts of the world
  * being replaced. */
 static void state_finish_load(void) {
@@ -1317,6 +1354,7 @@ static void state_finish_load(void) {
     MI_INIT_MODE = MI_MODE_CLR_DP;
     PI_STATUS = PI_STATUS_W_CLR_INTR;
     SI_STATUS = 0;
+    AI_DG_EV(8, AI_DG_SNAP((AI_LEN << 8) | 0x40u));
     AI_STATUS = 0;
     /* v12: a held moment is the VI's, with the lines that came pending during the hold
      * (RR_HOLD with bits 0/1); an older state's 1 or 2 is an SP or DP moment alone */
@@ -1513,13 +1551,29 @@ static void state_finish_load(void) {
      * takes ~1.6 s, the audio buffers run dry meanwhile and the completion
      * interrupt fired into the world being replaced (and was cleared above).
      * Audio engines that refill on that interrupt (Turok 2) then stay silent
-     * for good. If the AI is idle now, play 8 bytes of silence so a fresh
-     * interrupt reaches the restored world right after the resume; drivers
-     * paced by the VI simply ignore it. */
+     * for good; and a driver that keeps a lead by topping up (GoldenEye) settles
+     * into queueing each buffer only after the previous one ended when its first
+     * check after the resume finds the AI idle: a gap of a few hundred microseconds
+     * every frame, for good (the subtle stutter after a load). So if the AI is idle
+     * now, play 16 KiB of silence from a block of zeros in the loaded world's own RAM
+     * (93 ms at 22 kHz): the interrupt reaches the restored world, and its driver
+     * finds the AI busy at its first check whenever that comes. In borrowed mode the
+     * region copy-back would eat most of it, so the monitor's load epilogue queues
+     * it once the region is back (borrow_load_exit hands the block over). With no
+     * block of zeros, 8 bytes of the hook's own, for the interrupt at least. */
     if (!(AI_STATUS & 0xC0000000u)) {
-        __asm__ volatile("cache 0x19, 0(%0)" : : "r"(st_ai_silence) : "memory");   /* Hit_Writeback_D */
-        AI_DRAM_ADDR = (uint32_t)(uintptr_t)st_ai_silence & 0x1FFFFFFFu;
-        AI_LEN = 8u;
+        const uint32_t kick = 4u;
+        ai_zsrc = (kick >= 4u) ? ai_silence_find() : 0u;
+        AI_DG_EV(6, ai_zsrc | kick);
+        if (ai_zsrc && !borrowed_mode()) {
+            AI_DRAM_ADDR = ai_zsrc;
+            AI_LEN = AI_ZBLK;
+        } else if (!ai_zsrc) {
+            __asm__ volatile("cache 0x19, 0(%0)" : : "r"(st_ai_silence) : "memory");   /* Hit_Writeback_D */
+            AI_DRAM_ADDR = (uint32_t)(uintptr_t)st_ai_silence & 0x1FFFFFFFu;
+            AI_LEN = 8u;
+        }
+        AI_DG_EV(9, ai_dg[9] + 1u + (kick << 8));
     }
     if ((h->hook_version >= 7u) && h->reserved[5]) {
         /* continue the saved world's clock: without this the game's next frame
@@ -1759,9 +1813,9 @@ static void state_service(uint32_t cause) {
     if (!st_pending) {
         return;
     }
-    st_dbg[0]++;
+    ST_DBG(st_dbg[0]++;)
     if ((cause & CAUSE_EXC_MASK) != 0) {
-        st_dbg[1]++;
+        ST_DBG(st_dbg[1]++;)
         return;                                   /* not an interrupt */
     }
     uint32_t sr = c0_status();
@@ -1773,10 +1827,10 @@ static void state_service(uint32_t cause) {
         ip &= ~(1u << 15);                        /* the monitor saw none at its moment; one that matured
                                                    * during the borrow's DMAs is the frozen world's future */
     }
-    st_dbg[7] = cause;
-    st_dbg[8] = sr;
+    ST_DBG(st_dbg[7] = cause;)
+    ST_DBG(st_dbg[8] = sr;)
     if (ip != CAUSE_IP2_RCP) {
-        st_dbg[2]++;
+        ST_DBG(st_dbg[2]++;)
         return;                                   /* only the RCP line, nothing else pending */
     }
     /* borrowed mode: the moment is the monitor's, from before its stash and hook DMAs
@@ -1787,9 +1841,9 @@ static void state_service(uint32_t cause) {
      * (libdragon leaves the PI's pending for good) is no event the frozen world would
      * lose */
     uint32_t mi = (borrowed_mode() ? borrow_mi : MI_INTERRUPT) & MI_INTR_MASK & 0x3Fu;
-    st_dbg[9] = mi;
+    ST_DBG(st_dbg[9] = mi;)
     if ((mi != MI_INTR_VI) && (mi != MI_INTR_SP) && (mi != MI_INTR_DP)) {
-        st_dbg[3]++;
+        ST_DBG(st_dbg[3]++;)
         return;
     }
     if (mi & MI_INTR_VI) {
@@ -1797,11 +1851,11 @@ static void state_service(uint32_t cause) {
     }
     uint32_t sp = SP_STATUS;
     uint32_t dp = DPC_STATUS;
-    st_dbg[10] = sp;
-    st_dbg[11] = dp;
+    ST_DBG(st_dbg[10] = sp;)
+    ST_DBG(st_dbg[11] = dp;)
     uint32_t bad = 0;
     if (!(sp & SP_HALT) || (sp & (SP_DMA_BUSY | SP_DMA_FULL))) {
-        st_dbg[4]++;
+        ST_DBG(st_dbg[4]++;)
         bad = 1;
     }
     /* the RDP's command and DMA units idle, and its pipe as well for a game whose lists
@@ -1819,11 +1873,11 @@ static void state_service(uint32_t cause) {
         dp_busy |= DPC_PIPE_BUSY;
     }
     if (dp & dp_busy) {
-        st_dbg[5]++;
+        ST_DBG(st_dbg[5]++;)
         bad = 1;
     }
     if ((PI_STATUS & 3u) || (SI_STATUS & 3u)) {
-        st_dbg[6]++;
+        ST_DBG(st_dbg[6]++;)
         bad = 1;
     }
     if (snap_active) {
@@ -1860,12 +1914,40 @@ static void state_service(uint32_t cause) {
     }
     crumb(2u, st_pending, mi);
     if (st_pending == STATE_OP_MENU) {
-        if (menu_run(cause, mi) != 1u) {
+        uint32_t r = menu_run(cause, mi);
+        if (r == 3u) {                    /* FreeCam here: the live world into a scratch slot, then the view */
+            st_view_live = 1u;
+            st_pending = STATE_OP_SAVE;
+            goto view_live;
+        }
+        if (r != 1u) {
             state_done(ST_OK);            /* closed, or saved from inside: back to the game */
             return;
         }
         /* a load was chosen: st_slot is set, fall through into the load path */
     } else if (st_pending == STATE_OP_SAVE) {
+view_live:
+        if (st_view_live) {
+            /* the photo pause: the live world into a scratch cart slot (no card slot, no mirror),
+             * then the load path below loads it, views it, loads it again and resumes */
+            st_slot = cart_scratch_take();
+            if (!st_slot) {
+                feedback_show("NO SLOT");
+                state_done(ST_NO_STATE);
+                return;
+            }
+            uint32_t saved = state_do_save(cause, mi);
+            crumb(3u, saved, st_slot);
+            if (saved == ST_OK) slot_patch_clean_frame(st_slot);   /* from the panel: the frame under it (no stash: nothing) */
+            if (saved != ST_OK) {
+                cart_scratch_drop(st_slot);
+                feedback_show("SAVE FAILED");
+                state_done(saved);
+                return;
+            }
+            st_view = 1u;
+            goto load_path;
+        }
         if (!st_slot) st_slot = card_bind(st_card, 0, st_prefer);   /* a cart slot for the card slot */
         if (!st_slot) {
             feedback_show("NO SLOT");
@@ -1889,6 +1971,8 @@ static void state_service(uint32_t cause) {
         state_done(saved);
         return;
     }
+load_path:
+    st_view_done = 0;                 /* this load's own verdict, not the last view's */
     if (!st_slot) {                   /* the combo, a resume or the PC: a cart slot, the file read in */
         st_slot = card_bind(st_card, 1u, st_prefer);
         if (!st_slot) {
@@ -1902,6 +1986,20 @@ static void state_service(uint32_t cause) {
         state_done(status);       /* after the header check this leaves RAM half replaced; the PC at least learns why */
         return;
     }
+    if (st_view) {
+        st_view = 0;
+        st_view_done = 1u;
+        st_view_status = view_run();  /* the loaded frame, flown: RAM and the RCP are then anything */
+        status = state_do_load();     /* the world once more, exactly as the state has it */
+        if (st_view_live) {
+            cart_scratch_drop(st_slot);   /* the scratch state is nobody's: its header goes */
+            st_view_live = 0;
+        }
+        if (status != ST_OK) {
+            state_done(status);
+            return;
+        }
+    }
     if (resume_pending) {
         resume_pending = 0;
         state_resume_flag_clear();
@@ -1909,7 +2007,7 @@ static void state_service(uint32_t cause) {
     vi_frz_end();                 /* at a field start, before the loaded world's VI setup goes in */
     state_finish_load();
     crumb(11u, st_hdr.ctx.epc, st_hdr.ctx.status);
-    feedback_show("STATE LOADED");
+    feedback_show((st_view_done && (st_view_status != ST_OK)) ? "NO FRAME TO FLY" : "STATE LOADED");   /* a declined FreeCam says so: the state is loaded all the same */
     state_done(ST_OK);            /* the reply goes out before the world changes */
     TR_STAGE = 7;
     reentry = 0;
@@ -1925,7 +2023,7 @@ static void state_service(uint32_t cause) {
         c0_set_compare(st_hdr.reserved[5] + st_hdr.compare_delta);
     }
     if (borrowed_mode()) {
-        borrow_pc_ack(ST_OK);     /* a load the PC asked for: answered before the world changes */
+        borrow_pc_ack(st_view_done ? st_view_status : ST_OK);   /* a view answers with the viewer's verdict */
         borrow_load_exit();       /* the region under us is the stash's: the monitor puts it back, then erets */
     }
     state_resume(&st_hdr.ctx);
@@ -2204,9 +2302,6 @@ static void state_queue(uint32_t op) {
     st_wait = 0;
     st_hold_tries = 0;
     st_dma_ticks = 0;
-    for (uint32_t i = 0; i < 12u; i++) {
-        st_dbg[i] = 0;
-    }
     st_pending = op;
 }
 
@@ -4131,6 +4226,10 @@ static void borrow_load_exit(void) {
     rom_write_set(1u);
     dcache_writeback_all();
     pi_dma((uint32_t)(uintptr_t)&st_hdr.ctx, CTX_PI, 0x220u, 1u);
+    /* the silence for the monitor's load epilogue to queue once the region is back (0: none;
+     * bit 31 of the length: twice, the probe build's mode 5) */
+    pio_write(0xA0000000u | (CTX_PI + 0x228u), ai_zsrc);
+    pio_write(0xA0000000u | (CTX_PI + 0x22Cu), ai_zsrc ? AI_ZBLK : 0u);
     rom_write_set(0);
     crumb(0x63u, st_hdr.ctx.epc, st_hdr.ctx.status);
     ((void (*)(void))(uintptr_t)(MONITOR_KSEG1 + MON_EPIL_OFF))();
@@ -4511,6 +4610,7 @@ static void borrow_run(void) {
     if (op != 6u) {                   /* (the pak's own borrow answers no PC request: a pending one
                                        * stays on the cart for the monitor to arm after it) */
         borrow_pc = hook_cfg.pc_req;  /* the PC's request, if this borrow is one: answered at the end */
+        AI_DG_KICK((hook_cfg.pc_req >> 8) & 0xFu);
         hook_cfg.pc_req = 0;          /* (a write-back of the block must not repeat it) */
     }
     uint32_t pc_status = ST_OK;
@@ -4523,8 +4623,14 @@ static void borrow_run(void) {
         pc_status = pak_borrow();     /* the virtual pak's service: the site, the card mirror */
         crumb(0x65u, pc_status, tramp_state);
     } else if (op == 1u) {
+        if ((borrow_pc & 0xFF00u) == 0x5700u) {
+            st_view_live = 1u;        /* the PC's photo pause rides the save op */
+        }
         state_queue(STATE_OP_SAVE);
     } else if (op == 2u) {
+        if ((borrow_pc & 0xFF00u) == 0x5600u) {
+            st_view = 1u;             /* the PC's view request rides the load op */
+        }
         state_queue(STATE_OP_LOAD);
     } else if (op == 3u) {
         state_queue(STATE_OP_MENU);
@@ -4721,3 +4827,5 @@ out:
     }
     reentry = 0;
 }
+
+#include "ff_view.c"      /* the frozen-frame viewer: VIEW on a loaded state (after everything it uses) */

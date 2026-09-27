@@ -209,12 +209,10 @@ float png_decoder_get_progress (void) {
     return (float) (decoder->decoded_rows) / (decoder->ihdr.height);
 }
 
-/**
- * @brief Poll the PNG decoder to process the next row.
- */
-void png_decoder_poll (void) {
+/* SC64SS: one row; false once the decode has ended (the callback has run) */
+static bool png_decoder_row (void) {
     if (!decoder) {
-        return;
+        return false;
     }
 
     enum spng_errno err;
@@ -225,7 +223,7 @@ void png_decoder_poll (void) {
         void *callback_data = decoder->callback_data;
         png_decoder_deinit(true);
         callback(PNG_ERR_BAD_FILE, NULL, callback_data);
-        return;
+        return false;
     }
 
     err = spng_decode_row(decoder->ctx, decoder->row_buffer, decoder->ihdr.width * 3);
@@ -259,5 +257,23 @@ void png_decoder_poll (void) {
         void *callback_data = decoder->callback_data;
         png_decoder_deinit(true);
         callback(PNG_ERR_BAD_FILE, NULL, callback_data);
+    }
+    return (decoder != NULL);
+}
+
+/**
+ * @brief Poll the PNG decoder: rows for up to nine milliseconds of this frame.
+ * SC64SS: one row a frame made a 320x240 picture take four seconds to appear and a
+ * 640x480 one eight; the budget keeps the menu drawing meanwhile.
+ */
+void png_decoder_poll (void) {
+    if (!decoder) {
+        return;
+    }
+    uint32_t t0 = get_ticks();
+    while (png_decoder_row()) {
+        if (TICKS_DISTANCE(t0, get_ticks()) > TICKS_FROM_MS(9)) {
+            break;
+        }
     }
 }

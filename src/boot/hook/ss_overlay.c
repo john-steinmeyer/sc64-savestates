@@ -35,6 +35,9 @@ static uint32_t fb_expect_width = 0;             /* the loaded world's VI_WIDTH:
 static const char *msg_text = 0;
 static uint32_t msg_ticks = 0;
 static uint32_t menu_saves = 0, menu_loads = 0, menu_opens = 0;
+#define MENU_VIEW_KEY   0x0001u                     /* C-right on a state row: the frozen frame */
+#define MENU_CAM_ROW    1u                          /* the Game page's FREECAM HERE row */
+#define MENU_SLOTS_FOOT "A LOAD  Z SAVE  C> CAM  B CLOSE  > GAME"
 
 /* ---- colours --------------------------------------------------------------- */
 static uint32_t ov_rgb(const struct ov_screen *s, uint32_t r, uint32_t g, uint32_t b) {   /* 0..255 each */
@@ -423,8 +426,9 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
      * the state or, for one on the card only, from its file's head read into the scratch */
     uint32_t cur = (n && (hook_cfg.cur_slot < n)) ? hook_cfg.cur_slot : 0, top = 0;
     uint32_t prev = 0xFFFFu, confirm = 0, result = 0, redraw = 1, page = 0, grow = 0, exit_after = 0;
-    uint32_t pak_on = (hook_cfg.spare & 4u) ? 1u : 0u, rows = pak_on ? 6u : 5u;   /* the Game page's rows: SPEED, SOUND, EXIT, SUSPEND, [PAK,] DELETE */
-    uint32_t gdel = rows - 1u;                    /* the DELETE row */
+    uint32_t pak_on = (hook_cfg.spare & 4u) ? 1u : 0u, rows = (pak_on ? 6u : 5u) + MENU_CAM_ROW;   /* the Game page's rows: SPEED, SOUND, EXIT, SUSPEND, [PAK,] DELETE[, FREECAM] */
+    uint32_t gcam = rows - 1u;                    /* the FREECAM HERE row (the viewer builds) */
+    uint32_t gdel = gcam - MENU_CAM_ROW;          /* the DELETE row */
     uint32_t thumb_n = SLX_NONE;                  /* the card slot whose head is in the scratch */
     uint32_t cst = 0;                             /* the highlighted row's state word */
     if (pak_on && !borrowed_mode()) pak_live_from_cfg();
@@ -502,7 +506,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 }
                 const char *foot = (confirm == 1u) ? "OVERWRITE?  A YES   B NO" :
                                    ((confirm == 4u) ? "LAST EMPTY SLOT: SAVE?  A YES  B NO" :
-                                   ((confirm == 6u) ? "SAVED WITH SLOW MOTION ON   B BACK" : "A LOAD  Z SAVE  B CLOSE  > GAME"));
+                                   ((confirm == 6u) ? "SAVED WITH SLOW MOTION ON   B BACK" : MENU_SLOTS_FOOT));
                 menu_footer(&s, x0, y0, w, h, foot, confirm ? red : white);
             } else {
                 char *p;
@@ -538,6 +542,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 p = ov_cat(line, (grow == gdel) ? "> DELETE SLOT " : "  DELETE SLOT ");
                 ov_dec(p, cur + 1u);
                 ov_text(&s, x0 + 8u * sc, y0 + (pak_on ? 100u : 86u) * sc, line, (grow == gdel) ? hi : ((cst & 0xFFu) ? white : grey));
+                ov_text(&s, x0 + 8u * sc, y0 + (pak_on ? 114u : 100u) * sc, (grow == gcam) ? "> FREECAM HERE" : "  FREECAM HERE", (grow == gcam) ? hi : white);
                 if (confirm == 2u) {
                     menu_footer(&s, x0, y0, w, h, "LEAVE THE GAME?  A YES   B NO", red);
                 } else if (confirm == 3u) {
@@ -566,7 +571,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     } else if (grow == gdel) {
                         ov_text(&s, x0 + 8u * sc, y0 + hy * sc, (cst & 0xFFu) ? "THE STATE IS GONE, THE SLOT EMPTY AGAIN" : "THE SLOT IS EMPTY ALREADY", grey);
                     }
-                    menu_footer(&s, x0, y0, w, h, ((grow == 2u) || (grow == 3u) || (grow == gdel)) ? "A SELECT   B CLOSE   < SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
+                    menu_footer(&s, x0, y0, w, h, ((grow == 2u) || (grow == 3u) || (grow >= gdel)) ? "A SELECT   B CLOSE   < SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
                 }
             }
             if (note) ov_text(&s, x0 + w - 8u * sc - 7u * sc * 12u, y0 + 8u * sc, note, hi);
@@ -644,7 +649,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 if (!pak_live_store()) note = "CART BUSY";
                 redraw = 1;
             }
-            if (((grow == 2u) || (grow == 3u) || (grow == gdel)) && (left || right)) {   /* no value here: the other page */
+            if (((grow == 2u) || (grow == 3u) || (grow >= gdel)) && (left || right)) {   /* no value here: the other page */
                 page = 0;
                 redraw = 1;
                 continue;
@@ -663,6 +668,9 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 if ((grow == 3u) && (sd_state == 1u)) { note = "CARD BUSY"; redraw = 1; continue; }
                 confirm = (grow == 2u) ? 2u : 3u;
                 redraw = 1;
+            } else if ((grow == gcam) && (pressed & 0x8000u)) {   /* A: FreeCam on the live game (the caller saves it to a scratch slot and views it) */
+                result = 3u;
+                break;
             } else if ((grow == gdel) && (pressed & 0x8000u)) {   /* A: delete the highlighted slot's state */
                 if (!(cst & 0xFFu)) { note = "SLOT EMPTY  "; redraw = 1; continue; }
                 if (sd_state == 1u) { note = "CARD BUSY"; redraw = 1; continue; }
@@ -709,7 +717,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 result = 0;
                 break;
             }
-            if ((pressed & 0x8000u) && (cst & 0xFFu)) {   /* A: load */
+            if ((pressed & (0x8000u | MENU_VIEW_KEY)) && (cst & 0xFFu)) {   /* A: load (C-right: load and view the frame) */
                 if (borrowed_mode() && (cst & SLX_RESIDENT)) { confirm = 6u; redraw = 1; continue; }   /* saved with Slow motion on: it needs it */
                 if (sd_state == 1u) { note = "CARD BUSY"; redraw = 1; continue; }
                 menu_footer(&s, x0, y0, w, h, (cst & 0xFF00u) ? "LOADING..." : "READING THE CARD...", hi);
@@ -720,6 +728,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 hook_cfg.cur_slot = cur;
                 result = 1;
                 menu_loads++;
+                if (pressed & 0x0001u) st_view = 1u;   /* the frozen frame first, the game after B */
                 menu_footer(&s, x0, y0, w, h, "LOADING...", hi);
                 /* the press must be over before the load starts: the loaded game's first
                  * poll found the A that picked the slot and acted on it (Episode I Racer);
@@ -727,7 +736,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 {
                     uint32_t t1 = c0_count();
                     while ((c0_count() - t1) < (46875u * 1000u)) {
-                        if (!pad_dma_poll(&b) || !(b & 0x8000u)) break;
+                        if (!pad_dma_poll(&b) || !(b & (0x8000u | MENU_VIEW_KEY))) break;
                         vi_frz_service();
                     }
                 }

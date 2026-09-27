@@ -28,6 +28,10 @@ static void image_callback (png_err_t err, surface_t *decoded_image, void *callb
     menu_t *menu = (menu_t *) (callback_data);
 
     image_loading = false;
+    if (image) {                    // SC64SS: the previous picture stayed up through the decode
+        surface_free(image);
+        free(image);
+    }
     image = decoded_image;
 
     if (err != PNG_OK) {
@@ -41,7 +45,6 @@ static void image_callback (png_err_t err, surface_t *decoded_image, void *callb
 static void image_start (menu_t *menu) {
     show_message = false;
     image_loading = true;
-    image = NULL;
     int max_w = display_get_width();
     int max_h = display_get_height();
 
@@ -77,11 +80,6 @@ static void image_move (menu_t *menu, int dir) {
     if (image_loading) {
         png_decoder_abort();
         image_loading = false;
-    }
-    if (image) {
-        surface_free(image);
-        free(image);
-        image = NULL;
     }
     menu->browser.selected = i;
     menu->browser.entry = &menu->browser.list[i];

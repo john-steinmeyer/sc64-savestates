@@ -1,5 +1,30 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss1.9 (2026-09-27)
+
+- FreeCam: C-right on a state in the panel loads it and opens a free camera on that
+  frozen moment instead of the game, and FreeCam here on the panel's Game page does the
+  same on the live game. The stick looks around, the C buttons and the D-pad move, L is
+  fast and Z slow, R held with the stick zooms (forward, back) and rolls (sideways), R
+  tapped pushes the far plane out, D-left hides the HUD layer, D-right the fog, A resets
+  everything (with R held, the lens only), Start takes a screenshot of the view and B
+  puts the state back so the game carries on from it. The game's own frame is drawn
+  again by the console with the camera moved, for any game on the two common
+  display-list encodings; a moment that cannot be redrawn (a 2D screen, a game with
+  its own rendering microcode, a frame in several pieces, a frame that is not the one
+  on screen) says so and loads as usual. The panel's footer names the key CAM.
+- A load left the sound faintly stuttering for good in GoldenEye 007 and, less often,
+  in other games: the game's audio driver found the audio interface idle at its first
+  check after the resume and settled into queueing each buffer only after the previous
+  one ended, a gap of a fraction of a millisecond every frame. The load now leaves a
+  short silence playing (from a stretch of the game's own memory that holds zeros), so
+  the driver finds the interface busy and keeps its lead. Every existing state gets
+  this; nothing in the state format changed.
+- The menu's image viewer and the file browser's preview show a screenshot in a fraction
+  of a second. They decoded one row a frame: four seconds for a 320x240 picture, eight for
+  a 640x480 one, a bare progress bar meanwhile. The viewer also keeps the previous picture up
+  until the next one is ready.
+
 ## 0.3.4-ss1.8 (2026-09-22)
 
 - The list of save-state slots grows. It lives on the card, one file per slot with no

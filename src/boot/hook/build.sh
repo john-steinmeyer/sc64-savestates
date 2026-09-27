@@ -2,7 +2,8 @@
 # Build the save-state hook blob, the borrowed-mode monitor and the vector-page
 # fragments, and regenerate src/boot/hook_blob.c / hook_blob.h. Needs the libdragon
 # toolchain the menu itself is built with (N64_INST, or /opt/libdragon). Inputs in this
-# directory: entry.S, state.S, hook.c, ss_overlay.c, ss_font.h, hook.ld (the hook),
+# directory: entry.S, state.S, hook.c, ss_overlay.c, ss_font.h, ff_core.c, ff_core.h,
+# ff_ucode.h, ff_view.c, hook.ld (the hook),
 # lowpage.S, lowpage.ld (the vector-page fragments), monitor.S, monitor.ld, pakcrc.inc
 # (the cart monitor). The generated files are checked in, so this only has to run after
 # a change to these sources.
