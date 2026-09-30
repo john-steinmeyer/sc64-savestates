@@ -302,8 +302,33 @@ static int valid_op(uint32_t family, uint32_t op) {
     if (op == 0xC0u || op >= 0xE4u) return 1;                          /* the RDP's own commands */
     if (family == FF_FAM_F3D)
         return (op == 0x00u || op == 0x01u || op == 0x03u || op == 0x04u || op == 0x06u || op == 0x09u || (op >= 0xAFu && op <= 0xBFu));
+#if FF_CBFD
+    if (family == FF_FAM_F3DEX2CBFD && op >= 0x10u && op <= 0x1Fu) return 1;   /* four triangles each */
+#endif
     return (op <= 0x08u || (op >= 0xD3u && op <= 0xE3u) || op == 0xF1u);
 }
+
+#if FF_CBFD
+static const uint32_t ff_cbfd_crc[] = {
+    0xE1E93B36u,          /* Conker's Bad Fur Day (USA) */
+};
+
+int ff_cbfd_text(const struct ff_mem *mem, uint32_t text) {
+    uint32_t crc = 0xFFFFFFFFu, a, i, k;
+    text &= 0x1FFFFFFFu;
+    if ((text & 7u) || (text < 0x400u) || (text + 3072u > mem->limit)) return 0;
+    for (a = text; a < text + 3072u; a += 4u) {
+        uint32_t w = rd32(mem, a);
+        for (i = 0; i < 4u; i++) {
+            crc ^= (w >> (24u - 8u * i)) & 0xFFu;
+            for (k = 0; k < 8u; k++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    crc = ~crc;
+    for (i = 0; i < sizeof ff_cbfd_crc / sizeof ff_cbfd_crc[0]; i++) if (crc == ff_cbfd_crc[i]) return 1;
+    return 0;
+}
+#endif
 
 static void anomaly(struct ff_map *m, uint32_t pc, uint32_t op) {
     if (m->anomalies == 0) {
@@ -317,6 +342,9 @@ int ff_walk(const struct ff_mem *mem, uint32_t data_ptr, uint32_t family, const 
     uint32_t stack[FF_MAX_DEPTH];
     uint32_t depth = 0, unknown = 0, pc = data_ptr, i;
     uint32_t op_dl, op_enddl, op_mtx, op_mw, op_lu, cur_cimg = 0;
+#if FF_CBFD
+    uint32_t half1 = 0;                     /* the last RDPHALF_1's word: the data a microcode switch names */
+#endif
     zero(m, sizeof *m);
     m->family = family;
     m->data_ptr = data_ptr;
@@ -325,6 +353,9 @@ int ff_walk(const struct ff_mem *mem, uint32_t data_ptr, uint32_t family, const 
         op_dl = FF_F3D_DL; op_enddl = FF_F3D_ENDDL; op_mtx = FF_F3D_MTX; op_mw = FF_F3D_MOVEWORD; op_lu = FF_F3D_LOAD_UCODE;
     } else {
         op_dl = FF_F3DEX2_DL; op_enddl = FF_F3DEX2_ENDDL; op_mtx = FF_F3DEX2_MTX; op_mw = FF_F3DEX2_MOVEWORD; op_lu = FF_F3DEX2_LOAD_UCODE;
+#if FF_CBFD
+        if (family == FF_FAM_F3DEX2CBFD) op_lu = 0x100u;   /* 0xDD switches the lighting there: an ordinary command */
+#endif
     }
 #define RESOLVE(a) ((m->seg[((a) >> 24) & 0xFu] + ((a) & 0x00FFFFFFu)) & 0x00FFFFFFu)
 #define DENIED(a) ((mem->deny_hi > mem->deny_lo) && ((a) >= mem->deny_lo) && ((a) < mem->deny_hi))
@@ -346,6 +377,18 @@ int ff_walk(const struct ff_mem *mem, uint32_t data_ptr, uint32_t family, const 
         else if (op == ((family == FF_FAM_F3D) ? 0x03u : 0xDCu)) ff_mark(m, ra, 256u);
         else if (op == 0xFDu) ff_mark(m, ra, 0x40000u);
         else if ((family == FF_FAM_F3D) ? (op == 0x09u) : (op == 0xD6u)) ff_mark(m, ra, 0x2000u);
+#if FF_CBFD
+        if (family == FF_FAM_F3DEX2CBFD) {
+            /* the switch to the frame's second microcode (Conker: F3DEXBG to F3DEX at the 178th
+             * command): the RSP reads its code and overlays and the data the RDPHALF_1 before
+             * it named; the spare buffer must not land there */
+            if (op == FF_F3DEX2_RDPHALF_1) half1 = w1;
+            if (op == FF_F3DEX2_LOAD_UCODE) {
+                ff_mark(m, w1 & 0x00FFFFFFu, 0x1800u);
+                ff_mark(m, half1 & 0x00FFFFFFu, (w0 & 0xFFFFu) + 1u);
+            }
+        }
+#endif
         if (op == op_dl) {
             uint32_t target = ra;
             uint32_t branch = (w0 >> 16) & 0xFFu;
@@ -428,7 +471,10 @@ int ff_walk(const struct ff_mem *mem, uint32_t data_ptr, uint32_t family, const 
         if (op == op_lu) { anomaly(m, pc, 0x106u); break; }           /* a microcode switch mid-list: not walked */
         if (op == FF_RDP_SETCIMG) {
             uint32_t addr = ra;
-            if (DENIED(addr)) anomaly(m, pc, 0x108u);
+            /* (a colour image inside the denied range is no anomaly: the viewer draws the frame
+             * into spare buffers of its own then, ff_view.c; Pokemon Stadium 2's battle scenes draw
+             * into a buffer under the hook's home. A depth image there still is: nothing stands
+             * in for it.) */
             cur_cimg = addr;
             if (m->n_cimg < FF_MAX_CIMG) {
                 m->cimg[m->n_cimg].pc = pc;

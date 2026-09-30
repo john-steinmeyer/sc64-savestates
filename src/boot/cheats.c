@@ -70,6 +70,14 @@
 // setup below); build_ce.sh can switch it off for a bisect.
 #define SC64SS_WATCH_READS 1
 #define SC64SS_REINSTALL_STUB_ADDRESS   (0x80000360)
+// SC64SS: the alternate vector-page layout (lowpage.S SC64SS_LP_ALT, lowpage_alt.ld), for a title
+// whose boot clears the page below 0x300 after its first interrupts (Pokemon Stadium 2): the
+// engine at 0x360 (that home survives), its tail in a front at 0x3C0 that runs the gate at 0x200
+// when it is there and has the cart installer put every fragment back when it is not; EXIT at
+// 0x1DC from the start. The card-borrowed monitor with the installer's alt version goes with it.
+#define SC64SS_LOWPAGE_ALT_ENGINE_ADDRESS (0x80000360)
+#define SC64SS_LOWPAGE_ALT_FRONT_ADDRESS  (0x800003C0)
+#define SC64SS_LOWPAGE_ALT_GATE_ADDRESS   (0x80000200)
 // SC64SS borrowed mode: the engine's tail first runs the vector page's pre-install
 // check (lowpage.S lp_preinstall at 0x1DC, then 0x118 and 0x178), which goes on to the
 // monitor's gate installer in the cart (monitor.S mon_install) only for an interrupt
@@ -320,7 +328,32 @@ static io32_t *cheats_emit_copy (io32_t *p, uint32_t src, uint32_t dst, uint32_t
 _Static_assert(PATCHER_ADDRESS == SC64SS_LDBOOT_PATCHER_RAM, "cheats.h: the libdragon stub restores the patcher here");
 _Static_assert(ENGINE_TEMPORARY_ADDRESS == SC64SS_LDBOOT_ENGINE_RAM, "cheats.h: the libdragon stub restores the engine's copy here");
 
-bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads, bool libdragon) {
+bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads, bool libdragon, uint32_t hook_staging_pi, uint32_t hook_monitor_pi, bool hook_lp_alt) {
+    // SC64SS: the borrowed-mode monitor's home and its vector-page fragments: the SDRAM ones,
+    // or the card-borrowed placement's (the monitor in the cart's flash, its fragments linked for it)
+    uint32_t monitor_pi = hook_monitor_pi ? hook_monitor_pi : SC64SS_MONITOR_PI;
+    bool cb = (hook_monitor_pi != 0) && (hook_monitor_pi != SC64SS_MONITOR_PI);
+    // the alternate vector-page layout: with the card-borrowed monitor only (its installer's alt version)
+    bool alt = hook_lp_alt && cb && SC64SS_HOOK64_ALT_PRESENT;
+    const uint32_t *lp_360 = alt ? sc64ss_lowpage64b_200 : cb ? sc64ss_lowpage64_360 : sc64ss_lowpage_360;   // the gate (at 0x200 in the alt layout)
+    const uint32_t *lp_130 = alt ? sc64ss_lowpage64b_130 : cb ? sc64ss_lowpage64_130 : sc64ss_lowpage_130;
+    const uint32_t *lp_1dc = alt ? sc64ss_lowpage64b_1dc : cb ? sc64ss_lowpage64_1dc : sc64ss_lowpage_1dc;   // EXIT itself in the alt layout, the pre-install check otherwise
+    const uint32_t *lp_0f0 = alt ? sc64ss_lowpage64b_0f0 : cb ? sc64ss_lowpage64_0f0 : sc64ss_lowpage_0f0;
+    const uint32_t *lp_110 = alt ? sc64ss_lowpage64b_110 : cb ? sc64ss_lowpage64_110 : sc64ss_lowpage_110;
+    const uint32_t *lp_3c0 = sc64ss_lowpage64b_3c0;   // the alt layout's front
+    uint32_t lp_360_words = alt ? sc64ss_lowpage64b_200_words : cb ? sc64ss_lowpage64_360_words : sc64ss_lowpage_360_words;
+    uint32_t lp_130_words = alt ? sc64ss_lowpage64b_130_words : cb ? sc64ss_lowpage64_130_words : sc64ss_lowpage_130_words;
+    uint32_t lp_1dc_words = alt ? sc64ss_lowpage64b_1dc_words : cb ? sc64ss_lowpage64_1dc_words : sc64ss_lowpage_1dc_words;
+    uint32_t lp_0f0_words = alt ? sc64ss_lowpage64b_0f0_words : cb ? sc64ss_lowpage64_0f0_words : sc64ss_lowpage_0f0_words;
+    uint32_t lp_110_words = alt ? sc64ss_lowpage64b_110_words : cb ? sc64ss_lowpage64_110_words : sc64ss_lowpage_110_words;
+    uint32_t lp_3c0_words = sc64ss_lowpage64b_3c0_words;
+    // SC64SS: where the staging copy of the hook is (the patcher copies it in by PIO, the
+    // reinstall stub by DMA): the SDRAM area unless the menu says otherwise (the card-direct
+    // mode stages a 64 MiB ROM's hook in the cart's flash). One lui reaches it: 64 KiB aligned.
+    uint32_t staging_pi = hook_staging_pi ? hook_staging_pi : SC64SS_HOOK_STAGING_PI_ADDRESS;
+    if (staging_pi & 0xFFFF) {
+        return false;
+    }
     if (!cheat_list) {
         return false;
     }
@@ -339,6 +372,11 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     }
 
     io32_t *final_engine_address = cheats_get_engine_address(cheat_list);
+    // SC64SS: the alt layout's engine home (with no codes: the vector page's engine)
+    uint32_t lowpage_engine = alt ? SC64SS_LOWPAGE_ALT_ENGINE_ADDRESS : SC64SS_LOWPAGE_ENGINE_ADDRESS;
+    if (alt && ((uint32_t)(final_engine_address) == SC64SS_LOWPAGE_ENGINE_ADDRESS)) {
+        final_engine_address = (io32_t *)(SC64SS_LOWPAGE_ALT_ENGINE_ADDRESS);
+    }
 
     // Original watch exception handler code written by Jay Oster 'Parasyte'
     // https://github.com/parasyte/alt64/blob/master/utils.c#L1024-L1054
@@ -575,20 +613,25 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     // NOTE: evaluate the target first; the stock I_J macro used to expand its
     // argument unparenthesized, so a ?: expression inside it was mis-shifted
     // (emitted j 0x81F40000 instead of j 0x807D0000).
-    uint32_t lowpage = hook_address && ((uint32_t)(final_engine_address) == SC64SS_LOWPAGE_ENGINE_ADDRESS);
+    uint32_t lowpage = hook_address && ((uint32_t)(final_engine_address) == lowpage_engine);
     // SC64SS borrowed mode: no resident hook; the engine's tail runs the borrow gate
     // at the reinstall stub's address, the other fragments go to their vector-page
     // homes, and the hook stays in its staging copy for the cart monitor to pull in.
-    uint32_t borrow = hook_borrowed && (hook_blob != NULL) && ((uint32_t)(final_engine_address) == SC64SS_LOWPAGE_ENGINE_ADDRESS);
+    uint32_t borrow = hook_borrowed && (hook_blob != NULL) && ((uint32_t)(final_engine_address) == lowpage_engine);
     uint32_t tail_target = (borrow && (SC64SS_BISECT == 1 || SC64SS_BISECT == 2 || SC64SS_BISECT == 12)) ? RELOCATED_EXCEPTION_HANDLER_ADDRESS
                          : (lowpage || borrow) ? SC64SS_REINSTALL_STUB_ADDRESS
                          : (hook_address ? hook_address : RELOCATED_EXCEPTION_HANDLER_ADDRESS);
-    if (borrow && (tail_target == SC64SS_REINSTALL_STUB_ADDRESS)) {
+    if (alt && borrow) {
+        // the alt layout: the tail lands in the front at 0x3C0 for good (it runs the gate at
+        // 0x200 when it is there, the cart installer when it is not)
+        *engine_p++ = I_J(SC64SS_LOWPAGE_ALT_FRONT_ADDRESS);
+        *engine_p++ = I_NOP();
+    } else if (borrow && (tail_target == SC64SS_REINSTALL_STUB_ADDRESS)) {
         // borrowed mode: through the pre-install check to the installer (k0 = lui of
         // the monitor's kseg1 base, the check adds the low half); j 0x360 / nop once
         // the installer has run
         *engine_p++ = I_J(SC64SS_LOWPAGE_1DC_ADDRESS);
-        *engine_p++ = I_LUI(REG_K0, ((0xA0000000UL | SC64SS_MONITOR_PI) >> 16));
+        *engine_p++ = I_LUI(REG_K0, ((0xA0000000UL | monitor_pi) >> 16));
     } else {
         *engine_p++ = I_J(tail_target);
         *engine_p++ = I_NOP();
@@ -599,26 +642,41 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     io32_t *borrow_1dc = (io32_t *)(ENGINE_TEMPORARY_ADDRESS + 0x900);
     io32_t *borrow_0f0 = (io32_t *)(ENGINE_TEMPORARY_ADDRESS + 0xB00);
     io32_t *borrow_110 = (io32_t *)(ENGINE_TEMPORARY_ADDRESS + 0xC00);
+    io32_t *borrow_200 = (io32_t *)(ENGINE_TEMPORARY_ADDRESS + 0xD00);   // the alt layout's gate (0x200) and front (0x3C0)
+    io32_t *borrow_3c0 = (io32_t *)(ENGINE_TEMPORARY_ADDRESS + 0xE00);
     if (borrow && (SC64SS_BISECT != 1)) {
+        if (alt) {
+            // the alt layout: the gate and the front go in by the patcher's copies below, like the
+            // other fragments (nothing after the engine: the stub copy stays out)
+            for (uint32_t i = 0; i < lp_360_words; i++) {
+                borrow_200[i] = lp_360[i];
+            }
+            for (uint32_t i = 0; i < lp_3c0_words; i++) {
+                borrow_3c0[i] = lp_3c0[i];
+            }
+            cheats_update_cache(borrow_200, borrow_200 + lp_360_words);
+            cheats_update_cache(borrow_3c0, borrow_3c0 + lp_3c0_words);
+        } else {
         // the gate + the DMA primitive: exactly the reinstall stub's 36 words at 0x360
-        for (uint32_t i = 0; i < sc64ss_lowpage_360_words; i++) {
-            *engine_p++ = sc64ss_lowpage_360[i];
+        for (uint32_t i = 0; i < lp_360_words; i++) {
+            *engine_p++ = lp_360[i];
         }
         while ((engine_p - engine_end) < 36) {
             *engine_p++ = I_NOP();
         }
+        }
         // the other fragments wait above the engine's temporary copy for the patcher
-        for (uint32_t i = 0; i < sc64ss_lowpage_130_words; i++) {
-            borrow_130[i] = sc64ss_lowpage_130[i];
+        for (uint32_t i = 0; i < lp_130_words; i++) {
+            borrow_130[i] = lp_130[i];
         }
-        for (uint32_t i = 0; i < sc64ss_lowpage_1dc_words; i++) {
-            borrow_1dc[i] = sc64ss_lowpage_1dc[i];
+        for (uint32_t i = 0; i < lp_1dc_words; i++) {
+            borrow_1dc[i] = lp_1dc[i];
         }
-        for (uint32_t i = 0; i < sc64ss_lowpage_0f0_words; i++) {
-            borrow_0f0[i] = sc64ss_lowpage_0f0[i];
+        for (uint32_t i = 0; i < lp_0f0_words; i++) {
+            borrow_0f0[i] = lp_0f0[i];
         }
-        for (uint32_t i = 0; i < sc64ss_lowpage_110_words; i++) {
-            borrow_110[i] = sc64ss_lowpage_110[i];
+        for (uint32_t i = 0; i < lp_110_words; i++) {
+            borrow_110[i] = lp_110[i];
         }
         cheats_update_cache(borrow_130, borrow_130 + sc64ss_lowpage_130_words);
         cheats_update_cache(borrow_1dc, borrow_1dc + sc64ss_lowpage_1dc_words);
@@ -652,7 +710,7 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
         *engine_p++ = I_LUI(REG_K0, 0xA460);                               // 16
         *engine_p++ = I_LUI(REG_K1, (hook_address & 0x1FFFFFFF) >> 16);    // 17
         *engine_p++ = I_SW(REG_K1, 0x0000, REG_K0);                        // 18 PI_DRAM_ADDR
-        *engine_p++ = I_LUI(REG_K1, SC64SS_HOOK_STAGING_PI_ADDRESS >> 16);  // 19
+        *engine_p++ = I_LUI(REG_K1, staging_pi >> 16);                     // 19 (the staging copy: SDRAM, or the flash window)
         *engine_p++ = I_SW(REG_K1, 0x0004, REG_K0);                        // 20 PI_CART_ADDR
         *engine_p++ = I_LUI(REG_K1, dma_len >> 16);                        // 21 (the blob may exceed 64 KiB)
         *engine_p++ = I_ORI(REG_K1, REG_K1, dma_len & 0xFFFF);             // 22
@@ -701,8 +759,10 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     *patcher_p++ = I_BGTZ(REG_T6, -4);
     *patcher_p++ = I_ADDIU(REG_T5, REG_T5, D_CACHE_LINE_SIZE);
 
-    if (lowpage || borrow) {
+    if ((lowpage || borrow) && (engine_p != engine_end)) {
         // SC64SS: copy the reinstall stub or the borrow gate (temporary copy after the engine) to its home
+        // (the loop below copies at least one word: with nothing appended, a bisect without the gate,
+        // it clobbered the first word at the stub's address, the engine's when its home is 0x360)
         *patcher_p++ = I_LUI(REG_T3, A_BASE((uint32_t)(engine_end)));
         *patcher_p++ = I_ADDIU(REG_T3, REG_T3, A_OFFSET((uint32_t)(engine_end)));
         *patcher_p++ = I_LUI(REG_T4, A_BASE((uint32_t)(engine_p)));
@@ -729,10 +789,15 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
         // stubs into place (EXIT itself comes with the cart installer: 0x1DC once the
         // gate is in), the monitor's data words (0x190..0x1D8) and the pak stub's deferral
         // flag (0x3F4) zeroed
-        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_130), SC64SS_LOWPAGE_130_ADDRESS, sc64ss_lowpage_130_words);
-        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_1dc), SC64SS_LOWPAGE_1DC_ADDRESS, sc64ss_lowpage_1dc_words);
-        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_0f0), SC64SS_LOWPAGE_0F0_ADDRESS, sc64ss_lowpage_0f0_words);
-        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_110), SC64SS_LOWPAGE_110_ADDRESS, sc64ss_lowpage_110_words);
+        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_130), SC64SS_LOWPAGE_130_ADDRESS, lp_130_words);
+        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_1dc), SC64SS_LOWPAGE_1DC_ADDRESS, lp_1dc_words);
+        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_0f0), SC64SS_LOWPAGE_0F0_ADDRESS, lp_0f0_words);
+        patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_110), SC64SS_LOWPAGE_110_ADDRESS, lp_110_words);
+        if (alt) {
+            // the alt layout: the gate at 0x200 and the front at 0x3C0 (the engine's tail lands there)
+            patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_200), SC64SS_LOWPAGE_ALT_GATE_ADDRESS, lp_360_words);
+            patcher_p = cheats_emit_copy(patcher_p, (uint32_t)(borrow_3c0), SC64SS_LOWPAGE_ALT_FRONT_ADDRESS, lp_3c0_words);
+        }
         *patcher_p++ = I_LUI(REG_K0, 0x8000);
         for (uint32_t i = 0; i < 18; i++) {
             *patcher_p++ = I_SW(REG_ZERO, 0x190 + 4 * i, REG_K0);
@@ -839,7 +904,7 @@ bool cheats_install (cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *
     }
     if (hook_address) {
         // copy: cart SDRAM (PIO reads, synchronous) -> RDRAM (cached stores)
-        *patcher_p++ = I_LUI(REG_T3, (0xA0000000 | SC64SS_HOOK_STAGING_PI_ADDRESS) >> 16);   // KSEG1 view of the staging copy
+        *patcher_p++ = I_LUI(REG_T3, (0xA0000000 | staging_pi) >> 16);   // KSEG1 view of the staging copy (SDRAM, or the flash window)
         *patcher_p++ = I_LUI(REG_T5, 0x807D);
         *patcher_p++ = I_LUI(REG_T4, ((hook_size + 3) & ~3u) >> 16);
         *patcher_p++ = I_ORI(REG_T4, REG_T4, ((hook_size + 3) & ~3u) & 0xFFFF);

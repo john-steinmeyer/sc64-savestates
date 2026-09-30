@@ -13,8 +13,17 @@
 #include "boot/boot.h"
 #include "utils/fs.h"
 #include "views.h"
+#include "../fonts.h"
+#include "../ui_components/constants.h"
 #include "../../boot/hook_blob.h"
 #include "../../flashcart/flashcart_utils.h"
+// SC64SS card-direct: the cart driver's flash and config calls (sc64_ll.h itself clashes with
+// rom_info.h's save type names, so the three are declared here; their enums are ints)
+extern int sc64_ll_flash_erase_block (void *address);
+extern int sc64_ll_flash_wait_busy (void);
+extern int sc64_ll_set_config (int cfg, uint32_t value);
+#define SC64SS_LL_OK                    (0)
+#define SC64SS_CFG_ID_ROM_EXTENDED_ENABLE (14)
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,7 +231,121 @@ static void sc64ss_map_pack (uint32_t *maps, uint32_t i, const uint32_t *table, 
     *off = (*off + bytes + 15) & ~15UL;
 }
 
-static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_cart, bool borrowed) {
+// SC64SS card-direct mode (a ROM that fills the cartridge's SDRAM, 64 MiB): the hook64 blob
+// with its config, the slot maps, the index, the screenshot file's run table and header and
+// the FreeCam scratch file's run table are composed into one 256 KiB image here, written to a
+// card file and programmed into the first two erase blocks of the cart's flash ("ROM extended",
+// PI 0x14000000), where the boot patcher and the routine read them. While the image is being
+// composed sc64ss_cd_stage points at it and the preparation functions copy their tables into
+// it instead of writing them to SDRAM.
+#ifndef SC64SS_HOOK64_PRESENT
+#define SC64SS_HOOK64_PRESENT 0
+#endif
+#ifndef SC64SS_HOOK64_CB_PRESENT
+#define SC64SS_HOOK64_CB_PRESENT 0
+#endif
+#define SC64SS_CD_STASH_SECTORS (256UL)   // the card-borrowed stash file: 128 KiB, one contiguous run
+#define SC64SS_CD_STAGE_LEN     (0x40000UL)
+#define SC64SS_CD_BLOCK_LEN     (0x20000UL)
+#define SC64SS_CD_STAGE_FILE    "/menu/sc64ss_stage.bin"
+#define SC64SS_CD_OFF(pi)       ((pi) - SC64SS_CD_STAGING_PI)
+static uint8_t *sc64ss_cd_stage = NULL;
+
+// a ROM the card-direct mode is for: it reaches the engine's furniture on the cart, it is no
+// bigger than the cartridge's 64 MiB (the part of a bigger ROM goes to the flash area the mode
+// stages into), and it is a retail ROM (a libdragon ROM's boot goes another way)
+static bool sc64ss_card_direct_rom (menu_t *menu, int64_t rom_size) {
+    return SC64SS_HOOK64_PRESENT && (rom_size > (int64_t) (SC64SS_FRAME_STASH_PI - 0x10000000UL)) &&
+           (rom_size <= (int64_t) (64UL * 1024UL * 1024UL)) && !menu->load.rom_info.libdragon;
+}
+
+#if SC64SS_HOOK64_PRESENT
+static bool sc64ss_cd_program (menu_t *menu) {
+    path_t *p = path_init(menu->storage_prefix, SC64SS_CD_STAGE_FILE);
+    char *fp = path_get(p);
+    bool ok = false;
+    long t0 = (long) TIMER_MICROS(get_ticks());
+    // the image to its file (kept from launch to launch, rewritten in place when it has the size)
+    int64_t have = file_exists(fp) ? file_get_size(fp) : -1;
+    FILE *f = fopen(fp, (have == (int64_t) SC64SS_CD_STAGE_LEN) ? "r+b" : "wb");
+    if (f) {
+        ok = (fwrite(sc64ss_cd_stage, 1, SC64SS_CD_STAGE_LEN, f) == SC64SS_CD_STAGE_LEN);
+        fclose(f);
+    }
+    if (!ok) {
+        debugf("SC64SS: card-direct: could not write %s (%d)\n", fp, errno);
+        path_free(p);
+        return false;
+    }
+    // then into the flash: erase a block, the file's sectors straight into the flash window
+    // (the SD read programs them, as the menu loads a big ROM's extended part), wait
+    FIL fil;
+    UINT br = 0;
+    ok = false;
+    if (f_open(&fil, strip_fs_prefix(fp), FA_READ) == FR_OK) {
+        fatfs_fix_file_size(&fil);
+        ok = true;
+        for (uint32_t blk = 0; ok && (blk < (SC64SS_CD_STAGE_LEN / SC64SS_CD_BLOCK_LEN)); blk++) {
+            void *addr = (void *) (SC64SS_CD_STAGING_PI + blk * SC64SS_CD_BLOCK_LEN);
+            if (sc64_ll_flash_erase_block(addr) != SC64SS_LL_OK) {
+                debugf("SC64SS: card-direct: flash erase failed at %p\n", addr);
+                ok = false;
+            } else if ((f_read(&fil, addr, SC64SS_CD_BLOCK_LEN, &br) != FR_OK) || (br != SC64SS_CD_BLOCK_LEN)) {
+                debugf("SC64SS: card-direct: flash program failed at %p (%lu bytes)\n", addr, (unsigned long) br);
+                ok = false;
+            } else if (sc64_ll_flash_wait_busy() != SC64SS_LL_OK) {
+                debugf("SC64SS: card-direct: flash wait failed at %p\n", addr);
+                ok = false;
+            }
+        }
+        f_close(&fil);
+    } else {
+        debugf("SC64SS: card-direct: could not open %s for the flash\n", fp);
+    }
+    if (ok && (sc64_ll_set_config(SC64SS_CFG_ID_ROM_EXTENDED_ENABLE, 1) != SC64SS_LL_OK)) {
+        debugf("SC64SS: card-direct: the extended window could not be enabled\n");
+        ok = false;
+    }
+    debugf("SC64SS: card-direct staging %s (%ld ms)\n", ok ? "programmed into the cart's flash" : "FAILED", ((long) TIMER_MICROS(get_ticks()) - t0) / 1000);
+    path_free(p);
+    return ok;
+}
+#endif
+
+// SC64SS: a second bar under Loading ROM while the game's save-state files are checked, one by
+// one at every launch (about a tenth of a second a file: a game with many states starts some
+// seconds later, and this says why)
+static void draw_states_progress (float progress) {
+    surface_t *d = (progress >= 1.0f) ? display_get() : display_try_get();
+
+    if (d) {
+        int y0 = LOADER_Y + LOADER_HEIGHT + 16;
+
+        rdpq_attach(d, NULL);
+
+        ui_components_background_draw();
+
+        ui_components_loader_draw(1.0f, "Loading ROM...");
+        ui_components_border_draw(LOADER_X, y0, LOADER_X + LOADER_WIDTH, y0 + LOADER_HEIGHT);
+        ui_components_progressbar_draw(LOADER_X, y0, LOADER_X + LOADER_WIDTH, y0 + LOADER_HEIGHT, progress);
+        rdpq_text_printf(
+            &(rdpq_textparms_t) {
+                .width = LOADER_WIDTH,
+                .height = LOADER_HEIGHT,
+                .align = ALIGN_CENTER,
+                .valign = VALIGN_CENTER,
+            },
+            FNT_DEFAULT,
+            LOADER_X,
+            y0,
+            "Loading save states..."
+        );
+
+        rdpq_detach_show();
+    }
+}
+
+static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_cart, bool borrowed, void (*progress)(float)) {
     (void) borrowed;   // one slot layout and one file size for both placements (Slow motion switches freely)
     static uint32_t maps[SC64SS_SLOT_MAPS_LEN / 4] __attribute__((aligned(16)));
     static uint32_t index[1024] __attribute__((aligned(16)));
@@ -282,8 +405,16 @@ static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_
             r = dir_findnext(path_get(dir), &entry);
         }
     }
+    // the bar: the files there, then at most `spare` made fresh
+    uint32_t steps = (uint32_t) (max_n + 1) + spare;
+    if (progress) {
+        progress(0.0f);
+    }
     // each of them as it is: a state (its entry from the header), empty, or re-marked; its map packed
     for (int i = 0; i <= max_n; i++) {
+        if (progress) {
+            progress((float) i / (float) steps);
+        }
         sc64ss_card_name(name, sizeof(name), crc1, crc2, (uint32_t) i);
         path_t *file = path_clone(dir);
         path_push(file, name);
@@ -327,6 +458,9 @@ static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_
     }
     N = ((uint32_t) (max_n + 1) < want) ? (uint32_t) (max_n + 1) : want;
     for (; N < want; N++) {                        // the empties ahead, made fresh, their maps packed
+        if (progress) {
+            progress((float) ((N < steps) ? N : steps) / (float) steps);
+        }
         sc64ss_card_name(name, sizeof(name), crc1, crc2, N);
         path_t *file = path_clone(dir);
         path_push(file, name);
@@ -337,6 +471,9 @@ static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_
             break;
         }
         sc64ss_map_pack(maps, N, table, runs_ok, &off, &capped);
+    }
+    if (progress) {
+        progress(1.0f);
     }
     if (N > capped) {                              // the map region is full: the list stops there
         N = capped;
@@ -388,10 +525,62 @@ static void sc64ss_prepare_state_files (menu_t *menu, uint32_t *cfg, uint32_t n_
         index[33 + 3 * i] = 0;
         index[34 + 3 * i] = 0;
     }
-    data_cache_hit_writeback(maps, sizeof(maps));
-    dma_write(maps, SC64SS_SLOT_MAPS_PI, sizeof(maps));
-    data_cache_hit_writeback(index, sizeof(index));
-    dma_write(index, SC64SS_SLOT_INDEX_PI, sizeof(index));
+    if (sc64ss_cd_stage) {
+        // card-direct: the tables into the staging image, and the FreeCam scratch file
+        // (<checkcode>.stx, a state file that is nobody's slot: its marker names slot
+        // SC64SS_CD_SCRATCH_N) with its run table
+        memcpy(sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_MAPS_PI), maps, sizeof(maps));
+        memcpy(sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_INDEX_PI), index, sizeof(index));
+        snprintf(name, sizeof(name), "%08lX%08lX.stx", (unsigned long) crc1, (unsigned long) crc2);
+        path_t *file = path_clone(dir);
+        path_push(file, name);
+        int64_t have = file_exists(path_get(file)) ? file_get_size(path_get(file)) : -1;
+        int k = sc64ss_card_file(path_get(file), crc1, crc2, SC64SS_CD_SCRATCH_N, head, file_size, have, table, &total, file_sectors, &runs_ok);
+        if (k && runs_ok) {
+            memcpy(sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_SCRATCH_TABLE_PI), table, 12 + 12 * table[1]);
+            debugf("SC64SS: card-direct: scratch file %s ready\n", path_get(file));
+        } else {
+            debugf("SC64SS: card-direct: no scratch file (%s): no FreeCam on the live game\n", path_get(file));
+        }
+        path_free(file);
+        // the card-borrowed placement's stash file: 128 KiB in one run (a file twice that is
+        // allocated and its first run of the size taken; the FAT hands out runs as it likes)
+        snprintf(name, sizeof(name), "%08lX%08lX.stash", (unsigned long) crc1, (unsigned long) crc2);
+        file = path_clone(dir);
+        path_push(file, name);
+        uint32_t stash_sec = 0;
+        for (uint32_t attempt = 0; !stash_sec && (attempt < 2); attempt++) {
+            int64_t have = file_exists(path_get(file)) ? file_get_size(path_get(file)) : -1;
+            if ((have < (int64_t) (2 * 512 * SC64SS_CD_STASH_SECTORS)) && (file_allocate(path_get(file), 2 * 512 * SC64SS_CD_STASH_SECTORS) != 0)) {
+                break;
+            }
+            memset(table, 0, sizeof(table));
+            if (sc64ss_file_runs(path_get(file), table, &total, 2 * SC64SS_CD_STASH_SECTORS)) {
+                for (uint32_t r = 0; r < table[1]; r++) {
+                    if (table[3 + 3 * r + 2] >= SC64SS_CD_STASH_SECTORS) {
+                        stash_sec = table[3 + 3 * r];
+                        break;
+                    }
+                }
+            }
+            if (!stash_sec) {
+                remove(path_get(file));   // in too many pieces: made again (the FAT may place it elsewhere)
+            }
+        }
+        {
+            uint32_t *info = (uint32_t *) (sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_STASH_INFO_PI));
+            info[0] = stash_sec ? 0x53545348UL : 0;   // 'STSH'
+            info[1] = stash_sec;
+            info[2] = SC64SS_CD_STASH_SECTORS;
+        }
+        debugf("SC64SS: card-direct: stash file %s %s\n", path_get(file), stash_sec ? "ready" : "NOT AVAILABLE (no contiguous run)");
+        path_free(file);
+    } else {
+        data_cache_hit_writeback(maps, sizeof(maps));
+        dma_write(maps, SC64SS_SLOT_MAPS_PI, sizeof(maps));
+        data_cache_hit_writeback(index, sizeof(index));
+        dma_write(index, SC64SS_SLOT_INDEX_PI, sizeof(index));
+    }
     cfg[45] = N;
     cfg[46] = resume;
     cfg[47] = flags;
@@ -584,10 +773,15 @@ static uint32_t __attribute__((unused)) sc64ss_prepare_shot_file (menu_t *menu, 
         }
     }
     if (sectors) {
-        data_cache_hit_writeback(table, sizeof(table));
-        dma_write(table, SC64SS_SHOT_TABLE_PI, sizeof(table));
-        data_cache_hit_writeback(hdr, sizeof(hdr));
-        dma_write(hdr, SC64SS_SHOT_HDR_PI, sizeof(hdr));
+        if (sc64ss_cd_stage) {                    // card-direct: into the staging image
+            memcpy(sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_SHOT_TABLE_PI), table, sizeof(table));
+            memcpy(sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_SHOT_HDR_PI), hdr, sizeof(hdr));
+        } else {
+            data_cache_hit_writeback(table, sizeof(table));
+            dma_write(table, SC64SS_SHOT_TABLE_PI, sizeof(table));
+            data_cache_hit_writeback(hdr, sizeof(hdr));
+            dma_write(hdr, SC64SS_SHOT_HDR_PI, sizeof(hdr));
+        }
         cfg[43] = SC64SS_SHOT_HDR_SECTORS;        // hook_cfg.shot_fill
         cfg[44] = 0;                              // hook_cfg.shot_count
         debugf("SC64SS: screenshot file %s, %lu sectors\n", fp, (unsigned long) sectors);
@@ -1228,7 +1422,9 @@ static void set_savestate_option (menu_t *menu, void *arg) {
     }
     if (enabled) {
         uint32_t slots[SC64SS_SLOTS_MAX];
-        if (sc64ss_slot_table(file_get_size(path_get(menu->load.rom_path)), slots, SC64SS_STATE_SLOT_LEN_B, menu->load.rom_info.libdragon) == 0) {
+        int64_t rom_size = file_get_size(path_get(menu->load.rom_path));
+        if (!sc64ss_card_direct_rom(menu, rom_size) &&
+            (sc64ss_slot_table(rom_size, slots, SC64SS_STATE_SLOT_LEN_B, menu->load.rom_info.libdragon) == 0)) {
             rom_config_setting_set_savestates(menu->load.rom_path, &menu->load.rom_info, false);
             menu_show_error(menu, "No room for save states:\nthe ROM fills the cartridge memory");
             menu->browser.reload = true;
@@ -1293,7 +1489,8 @@ static const char *format_vpak_info (rom_info_t *rom_info) {
 // Slots and files have one layout for both, so switching loses no state; a state saved
 // with it on holds the RAM below the routine (7.75 MiB) and loads either way. Games
 // that use all of the Expansion Pak (Donkey Kong 64, Perfect Dark, Indiana Jones, Rush
-// 2049) never boot with it on, since the routine's home at the top of RAM is theirs:
+// 2049) never boot with it on, since the routine's home at the top of RAM is theirs,
+// and Resident Evil 2's cutscenes keep their data there (the console died in one):
 // the option is refused for them, and a launch keeps the borrowed engine for them
 // whatever an old ini says.
 static bool sc64ss_full_ram_title (const rom_info_t *rom_info) {
@@ -1303,6 +1500,7 @@ static bool sc64ss_full_ram_title (const rom_info_t *rom_info) {
         { 'N', 'I', 'J' },      // Indiana Jones and the Infernal Machine
         { 'N', 'R', 'U' },      // San Francisco Rush 2049
         { 'N', '3', 'T' },      // Tony Hawk's Pro Skater 3 (its high-resolution mode)
+        { 'N', 'R', 'E' },      // Resident Evil 2 (its cutscenes)
     };
     for (uint32_t k = 0; k < sizeof(codes) / sizeof(codes[0]); k++) {
         if (memcmp(rom_info->game_code, codes[k], 3) == 0) {
@@ -1310,6 +1508,13 @@ static bool sc64ss_full_ram_title (const rom_info_t *rom_info) {
         }
     }
     return false;
+}
+
+// SC64SS: the titles on the alternate vector-page layout (the launch's built-in list, lp_alt:
+// their boot clears the page the resident hook's engine lives in) run the borrowed engine
+// only, so the option is refused for them as for the full-RAM titles
+static bool sc64ss_lp_alt_title (const rom_info_t *rom_info) {
+    return memcmp(rom_info->game_code, "NP3", 3) == 0;       // Pokemon Stadium 2, every region's code
 }
 
 static void set_slowmotion_option (menu_t *menu, void *arg) {
@@ -1322,7 +1527,13 @@ static void set_slowmotion_option (menu_t *menu, void *arg) {
     }
     if (enabled && sc64ss_full_ram_title(&menu->load.rom_info)) {
         rom_config_setting_set_hook_borrowed(menu->load.rom_path, &menu->load.rom_info, true);
-        menu_show_error(menu, "Slow motion is not available for this game: it uses all of the Expansion Pak, where the routine would sit");
+        menu_show_error(menu, "Slow motion is not available for this game: it uses the part of the Expansion Pak where the routine would sit");
+        menu->browser.reload = true;
+        return;
+    }
+    if (enabled && sc64ss_lp_alt_title(&menu->load.rom_info)) {
+        rom_config_setting_set_hook_borrowed(menu->load.rom_path, &menu->load.rom_info, true);
+        menu_show_error(menu, "Slow motion is not available for this game: its boot clears the memory the routine would keep, so it runs the borrowed engine only");
         menu->browser.reload = true;
         return;
     }
@@ -1408,7 +1619,10 @@ static void set_clear_rdram_option(menu_t *menu, void *arg) {
 }
 
 static void add_favorite (menu_t *menu, void *arg) {
-    bookkeeping_favorite_add(&menu->bookkeeping, menu->load.rom_path, NULL, BOOKKEEPING_TYPE_ROM);
+    // SC64SS: a new favorite goes to the end of the list, which holds FAVORITES_COUNT
+    if (bookkeeping_favorite_add(&menu->bookkeeping, menu->load.rom_path, NULL, BOOKKEEPING_TYPE_ROM) == BOOKKEEPING_FAVORITE_FULL) {
+        menu_show_error(menu, "Favorites are full: remove one first");
+    }
 }
 
 static void iterate_metadata_image(menu_t *menu, int direction) {
@@ -2087,31 +2301,52 @@ static void load (menu_t *menu) {
     //    sit at 0x060, in the same handler, so such a title gets no virtual pak.
     //  - the resident hook instead of the borrowed engine (no title needs it any more;
     //    the Slow motion option is the player's way to it).
-    static const struct { char code[4]; bool watch_reads; bool resident; bool scratch_hi; } sc64ss_titles[] = {
-        { {'N', 'B', 'K', 'E'}, false, false, false },     // Banjo-Kazooie
-        { {'N', 'G', 'E', 'E'}, false, false, true },      // GoldenEye 007
+    //  - the alternate vector-page layout (lp_alt; cheats.c, lowpage.S SC64SS_LP_ALT): a title whose
+    //    boot clears the page below 0x300 after its first interrupts. Pokemon Stadium 2 wiped the
+    //    engine, the exits, the helper, the data words and the gate a few frames in (black screen);
+    //    with the engine at 0x360 it boots, and the cart installer puts the rest back after the
+    //    clear. Card-borrowed placement only (the resident hook's engine at 0x090 would go too).
+    // (a '*' for the region letter matches every region's code)
+    static const struct { char code[4]; bool watch_reads; bool resident; bool scratch_hi; bool lp_alt; } sc64ss_titles[] = {
+        { {'N', 'B', 'K', 'E'}, false, false, false, false },     // Banjo-Kazooie
+        { {'N', 'G', 'E', 'E'}, false, false, true, false },      // GoldenEye 007
+        { {'N', 'P', '3', '*'}, true, false, false, true },       // Pokemon Stadium 2
     };
     bool ce_watch_reads = menu->load.rom_info.settings.watch_reads;
     bool ce_resident_title = false;
+    bool ce_lp_alt = false;
     bool ce_scratch_hi = false;
     for (uint32_t k = 0; k < sizeof(sc64ss_titles) / sizeof(sc64ss_titles[0]); k++) {
-        if (memcmp(menu->load.rom_info.game_code, sc64ss_titles[k].code, 4) == 0) {
+        if ((memcmp(menu->load.rom_info.game_code, sc64ss_titles[k].code, 3) == 0) &&
+            ((sc64ss_titles[k].code[3] == '*') || (menu->load.rom_info.game_code[3] == sc64ss_titles[k].code[3]))) {
             if (!sc64ss_titles[k].watch_reads) {
                 ce_watch_reads = false;
-                debugf("SC64SS: %.4s boots with the watchpoint on writes only (a title on the built-in list)\n", sc64ss_titles[k].code);
+                debugf("SC64SS: %.4s boots with the watchpoint on writes only (a title on the built-in list)\n", menu->load.rom_info.game_code);
             }
             if (sc64ss_titles[k].resident) {
                 ce_resident_title = true;
-                debugf("SC64SS: %.4s takes the resident hook (a title on the built-in list)\n", sc64ss_titles[k].code);
+                debugf("SC64SS: %.4s takes the resident hook (a title on the built-in list)\n", menu->load.rom_info.game_code);
+            }
+            if (sc64ss_titles[k].lp_alt) {
+                ce_lp_alt = true;
+                debugf("SC64SS: %.4s clears the vector page at boot: the alternate layout (a title on the built-in list)\n", menu->load.rom_info.game_code);
             }
             if (sc64ss_titles[k].scratch_hi) {
                 ce_scratch_hi = true;
-                debugf("SC64SS: %.4s gets the monitor with its scratch at 0x2A8, and no virtual pak (a title on the built-in list)\n", sc64ss_titles[k].code);
+                debugf("SC64SS: %.4s gets the monitor with its scratch at 0x2A8, and no virtual pak (a title on the built-in list)\n", menu->load.rom_info.game_code);
             }
         }
     }
     if (ce_scratch_hi && ce_vpak) {
         ce_vpak = false;                      // the pak stub's home (0x060) is inside the game's own handler
+    }
+    if (ce_lp_alt && ce_codes && (ce_states || ce_vpak || ce_shots)) {
+        // the codes need the resident placement, and the alternate layout is the borrowed engine's
+        // only (the resident engine's page is what this game clears at boot): the codes alone
+        debugf("SC64SS: %.4s with codes: the codes alone, no save states, screenshots or pak\n", menu->load.rom_info.game_code);
+        ce_states = false;
+        ce_vpak = false;
+        ce_shots = false;
     }
     if (!menu->load.rom_info.settings.watch_reads) {
         debugf("SC64SS: watch_reads=0 in the ini, the watchpoint covers writes only\n");
@@ -2162,29 +2397,55 @@ static void load (menu_t *menu) {
     menu->boot_params->hook_size = 0;
     menu->boot_params->boot_patches = NULL;
     menu->boot_params->boot_patch_count = 0;
+    bool ce_direct = false;                   // SC64SS card-direct mode: the hook64 blob, staged in the cart's flash
     if (ce_states || ce_vpak || ce_shots) {
         // SC64SS: the engine's furniture on the cart (the frame stash, the hook staging,
         // the virtual pak, the monitor, the stash) sits from SC64SS_FRAME_STASH_PI up; a
-        // ROM that reaches it (64 MiB: Conker, Resident Evil 2) boots without the engine.
+        // ROM that reaches it (64 MiB: Conker, Resident Evil 2, Pokemon Stadium 2) gets the
+        // card-direct hook when this menu carries it: resident placement, the staging copy
+        // and the launch tables in the cart's flash, states and screenshots streamed to the
+        // card through the data buffer, no virtual pak. Otherwise it boots without the engine.
         rom_size = file_get_size(path_get(menu->load.rom_path));
         if ((rom_size <= 0) || (rom_size > (int64_t) (SC64SS_FRAME_STASH_PI - 0x10000000UL))) {
-            debugf("SC64SS: a %lld byte ROM leaves no room on the cart, save states and the virtual pak off\n", rom_size);
-            ce_states = false;
-            ce_vpak = false;
-            ce_shots = false;
+            if (sc64ss_card_direct_rom(menu, rom_size) && (ce_states || ce_shots) && (sc64ss_hook64_blob_size <= SC64SS_HOOK_STAGING_LEN)) {
+                ce_direct = true;
+                if (ce_vpak) {
+                    debugf("SC64SS: card-direct mode: the virtual pak is off for a %lld byte ROM\n", rom_size);
+                }
+                ce_vpak = false;
+                // the placement as for any game: borrowed unless the Slow motion option keeps
+                // the hook resident (or codes want the classic engine); the borrowed monitor
+                // then runs from the cart's flash with its stash on the card
+                ce_borrowed = (menu->load.rom_info.settings.hook_borrowed || sc64ss_full_ram_title(&menu->load.rom_info)) &&
+                              !ce_codes && !ce_resident_title && SC64SS_HOOK64_CB_PRESENT;   // (a refused title: borrowed whatever an old ini says)
+                if (ce_lp_alt && SC64SS_HOOK64_ALT_PRESENT && !ce_codes && !ce_borrowed) {
+                    ce_borrowed = true;               // the alternate layout needs the cart monitor: the borrowed engine, whatever the ini says
+                    debugf("SC64SS: %.4s: the alternate layout takes the borrowed engine, whatever the ini says\n", menu->load.rom_info.game_code);
+                }
+                menu->boot_params->hook_borrowed = ce_borrowed;
+                debugf("SC64SS: card-direct mode for a %lld byte ROM (hook64 %lu bytes, %s placement)\n", rom_size, sc64ss_hook64_blob_size, ce_borrowed ? "borrowed" : "resident");
+            } else {
+                debugf("SC64SS: a %lld byte ROM leaves no room on the cart, save states and the virtual pak off\n", rom_size);
+                ce_states = false;
+                ce_vpak = false;
+                ce_shots = false;
+            }
         }
     }
-    if (ce_states) {
+    const uint32_t *ce_blob = ce_direct ? sc64ss_hook64_blob : sc64ss_hook_blob;
+    uint32_t ce_blob_size = ce_direct ? sc64ss_hook64_blob_size : sc64ss_hook_blob_size;
+    uint32_t ce_cfg_off = ce_direct ? SC64SS_HOOK64_CFG_OFFSET : SC64SS_HOOK_CFG_OFFSET;
+    if (ce_states && !ce_direct) {
         ce_slots_n = sc64ss_slot_table(rom_size, ce_slots, SC64SS_STATE_SLOT_LEN_B, menu->load.rom_info.libdragon);   // one layout for both placements
         if (ce_slots_n == 0) {
             debugf("SC64SS: no room for a state slot above a %lld byte ROM, save states off\n", rom_size);
             ce_states = false;
-        } else if (sc64ss_hook_blob_size > SC64SS_HOOK_STAGING_LEN) {
-            debugf("SC64SS: hook blob too large (%lu bytes), save states off\n", sc64ss_hook_blob_size);
+        } else if (ce_blob_size > SC64SS_HOOK_STAGING_LEN) {
+            debugf("SC64SS: hook blob too large (%lu bytes), save states off\n", ce_blob_size);
             ce_states = false;
         }
     }
-    if ((ce_vpak || ce_shots) && (sc64ss_hook_blob_size > SC64SS_HOOK_STAGING_LEN)) {
+    if ((ce_vpak || ce_shots) && (ce_blob_size > SC64SS_HOOK_STAGING_LEN)) {
         ce_vpak = false;
         ce_shots = false;
     }
@@ -2201,19 +2462,37 @@ static void load (menu_t *menu) {
                 debugf("Cheats enabled, %u cheats found\n", cheat_item_count / 2);
                 menu->boot_params->cheat_list = cheats;
                 if (ce_states || ce_vpak || ce_shots) {
-                    menu->boot_params->hook_blob = sc64ss_hook_blob;
-                    menu->boot_params->hook_size = sc64ss_hook_blob_size;
-                    // SC64SS: stage the hook in cart SDRAM (SC64SS_HOOK_STAGING_PI); the boot
-                    // patcher copies it into RDRAM after IPL3 has run, and the reinstall stub
-                    // copies it again if the game's boot-time RAM sweep wipes it.
-                    data_cache_hit_writeback(sc64ss_hook_blob, sc64ss_hook_blob_size);
-                    dma_write(sc64ss_hook_blob, SC64SS_HOOK_STAGING_PI, ((sc64ss_hook_blob_size + 1) & ~1));
-                    debugf("SC64SS hook armed, %lu bytes, %lu slots for a %lld byte ROM\n", sc64ss_hook_blob_size, ce_slots_n, rom_size);
+                    menu->boot_params->hook_blob = ce_blob;
+                    menu->boot_params->hook_size = ce_blob_size;
+                    menu->boot_params->hook_staging_pi = ce_direct ? SC64SS_CD_STAGING_PI : SC64SS_HOOK_STAGING_PI;
+                    menu->boot_params->hook_monitor_pi = (ce_direct && ce_borrowed) ? SC64SS_CD_MONITOR_PI : 0;
+                    menu->boot_params->hook_lp_alt = ce_direct && ce_borrowed && ce_lp_alt && SC64SS_HOOK64_ALT_PRESENT;   // the alternate vector-page layout (the cart monitor's alt build goes with it)
+                    if (ce_direct) {
+                        // SC64SS card-direct: the staging image is composed in RAM and programmed
+                        // into the cart's flash once everything is in it (sc64ss_cd_program)
+                        sc64ss_cd_stage = malloc(SC64SS_CD_STAGE_LEN);
+                        if (sc64ss_cd_stage) {
+                            memset(sc64ss_cd_stage, 0xFF, SC64SS_CD_STAGE_LEN);
+                            memcpy(sc64ss_cd_stage, ce_blob, ce_blob_size);
+                        } else {
+                            debugf("SC64SS: card-direct: no memory for the staging image\n");
+                            menu->boot_params->hook_blob = NULL;
+                            ce_states = false;
+                            ce_shots = false;
+                        }
+                    } else {
+                        // SC64SS: stage the hook in cart SDRAM (SC64SS_HOOK_STAGING_PI); the boot
+                        // patcher copies it into RDRAM after IPL3 has run, and the reinstall stub
+                        // copies it again if the game's boot-time RAM sweep wipes it.
+                        data_cache_hit_writeback((void *) ce_blob, ce_blob_size);
+                        dma_write(ce_blob, SC64SS_HOOK_STAGING_PI, ((ce_blob_size + 1) & ~1));
+                    }
+                    debugf("SC64SS hook armed, %lu bytes, %lu slots for a %lld byte ROM%s\n", ce_blob_size, ce_slots_n, rom_size, ce_direct ? " (card-direct)" : "");
                     // SC64SS: patch the hook's config block in the staged copy with the slot
                     // table (the boot patcher copies that copy into RDRAM).
-                    if (SC64SS_HOOK_CFG_OFFSET + SC64SS_HOOK_CFG_WORDS * 4 <= sc64ss_hook_blob_size) {
+                    if ((menu->boot_params->hook_blob != NULL) && (ce_cfg_off + SC64SS_HOOK_CFG_WORDS * 4 <= ce_blob_size)) {
                         static uint32_t sc64ss_cfg[SC64SS_HOOK_CFG_WORDS] __attribute__((aligned(16)));
-                        memcpy(sc64ss_cfg, &sc64ss_hook_blob[SC64SS_HOOK_CFG_OFFSET / 4], sizeof(sc64ss_cfg));
+                        memcpy(sc64ss_cfg, &ce_blob[ce_cfg_off / 4], sizeof(sc64ss_cfg));
                         if (sc64ss_cfg[0] == SC64SS_HOOK_CFG_MAGIC) {
                             for (uint32_t i = 0; i < SC64SS_SLOTS_MAX; i++) {
                                 sc64ss_cfg[2 + i] = (i < ce_slots_n) ? ce_slots[i] : 0;
@@ -2240,15 +2519,60 @@ static void load (menu_t *menu) {
                                 sc64ss_cfg[25] = SC64SS_STATE_IMAGE_LEN_B;   // hook_cfg.image_len: all 8 MiB
                                 sc64ss_cfg[27] |= 0x20;                      // hook_cfg.spare bit 5: borrowed
                             }
+                            // hook_cfg.spare bit 22 with bits 20..21: the console's own TV type, as this menu
+                            // was booted with it. The game gets its ROM's (or the TV type option's), so Exit
+                            // to menu takes this one back to the bootloader: a PAL game on an NTSC console
+                            // left the menu in PAL, a rolling picture on an NTSC TV
+                            sc64ss_cfg[27] = (sc64ss_cfg[27] & ~0x700000UL) | 0x400000UL | (((uint32_t) get_tv_type() & 3) << 20);
+                            if (ce_direct) {
+                                sc64ss_cfg[27] |= 0x10000;                   // hook_cfg.spare bit 16: card-direct (for the PC tools; the blob knows)
+                                if (menu->boot_params->hook_lp_alt) {
+                                    sc64ss_cfg[27] |= 0x20000;               // hook_cfg.spare bit 17: the alternate vector-page layout (the hook keeps its boot words by it)
+                                }
+                            }
                             if (ce_states) {
-                                sc64ss_prepare_state_files(menu, sc64ss_cfg, ce_slots_n, ce_borrowed);
+                                sc64ss_prepare_state_files(menu, sc64ss_cfg, ce_slots_n, ce_borrowed,
+#ifdef FEATURE_AUTOLOAD_ROM_ENABLED
+                                    menu->settings.loading_progress_bar_enabled ? draw_states_progress : NULL
+#else
+                                    draw_states_progress
+#endif
+                                );
                             }
                             if (ce_vpak && sc64ss_prepare_pak(menu)) {
                                 sc64ss_cfg[27] |= 4;       // hook_cfg.spare bit 2: the virtual pak is in
                                 sc64ss_cfg[27] |= (uint32_t) ((menu->load.rom_info.settings.vpak_port - 1) & 3) << 12;   // bits 12..13: its port at launch
                             }
-                            data_cache_hit_writeback(sc64ss_cfg, sizeof(sc64ss_cfg));
-                            dma_write(sc64ss_cfg, SC64SS_HOOK_STAGING_PI + SC64SS_HOOK_CFG_OFFSET, sizeof(sc64ss_cfg));
+                            if (ce_direct) {
+#if SC64SS_HOOK64_PRESENT
+                                memcpy(sc64ss_cd_stage + ce_cfg_off, sc64ss_cfg, sizeof(sc64ss_cfg));
+#if SC64SS_HOOK64_CB_PRESENT
+                                if (ce_borrowed) {   // the monitor into the flash tables' block
+                                    memcpy(sc64ss_cd_stage + SC64SS_CD_OFF(SC64SS_CD_MONITOR_PI), menu->boot_params->hook_lp_alt ? sc64ss_monitor64b_blob : sc64ss_monitor64_blob, menu->boot_params->hook_lp_alt ? sc64ss_monitor64b_blob_size : sc64ss_monitor64_blob_size);   // the alt layout's monitor carries the installer's alt version
+                                }
+#endif
+                                if (!sc64ss_cd_program(menu)) {
+                                    debugf("SC64SS: card-direct staging failed: the game boots without the routine\n");
+                                    menu->boot_params->hook_blob = NULL;
+                                    menu->boot_params->hook_size = 0;
+                                } else {
+                                    // the cfg's mirror in the data buffer (the truth between borrows) and the
+                                    // monitor's flags word zeroed: after the flash step, whose SD reads into the
+                                    // flash window bounce through the buffer's first 4 KiB (measured: a mirror
+                                    // written before it read back as the staging image's 0xFF padding)
+                                    static uint32_t sc64ss_mirror[64] __attribute__((aligned(16)));
+                                    memset(sc64ss_mirror, 0, sizeof(sc64ss_mirror));
+                                    memcpy(sc64ss_mirror, sc64ss_cfg, sizeof(sc64ss_cfg));
+                                    data_cache_hit_writeback(sc64ss_mirror, sizeof(sc64ss_mirror));
+                                    dma_write(sc64ss_mirror, SC64SS_CD_CFG_MIRROR_PI, sizeof(sc64ss_mirror));
+                                }
+                                free(sc64ss_cd_stage);
+                                sc64ss_cd_stage = NULL;
+#endif
+                            } else {
+                                data_cache_hit_writeback(sc64ss_cfg, sizeof(sc64ss_cfg));
+                                dma_write(sc64ss_cfg, SC64SS_HOOK_STAGING_PI + SC64SS_HOOK_CFG_OFFSET, sizeof(sc64ss_cfg));
+                            }
                             if (menu->load.rom_info.check_code_from_content) {
                                 // the hook tells a ROM by the check code words of its header. A ROM
                                 // whose header has none gets the computed one written there (nothing
@@ -2259,7 +2583,7 @@ static void load (menu_t *menu) {
                                 data_cache_hit_writeback(sc64ss_ident, sizeof(sc64ss_ident));
                                 dma_write(sc64ss_ident, 0x10000010, 8);
                             }
-                            if (ce_borrowed) {
+                            if (ce_borrowed && !ce_direct) {
                                 // the monitor, run in place from the cart by the vector-page gate
                                 const uint32_t *mon = sc64ss_monitor_blob;
                                 static uint32_t sc64ss_monitor_copy[SC64SS_MONITOR_LEN / 4] __attribute__((aligned(16)));
@@ -2275,6 +2599,13 @@ static void load (menu_t *menu) {
                                 data_cache_hit_writeback((void *) mon, sc64ss_monitor_blob_size);
                                 dma_write(mon, SC64SS_MONITOR_PI, ((sc64ss_monitor_blob_size + 1) & ~1));
                                 debugf("SC64SS: borrowed-RAM mode, monitor %lu bytes at 0x%08lX%s\n", (unsigned long) sc64ss_monitor_blob_size, (unsigned long) SC64SS_MONITOR_PI, ce_scratch_hi ? " (scratch at 0x2A8)" : "");
+                                {   // the frame-buffer history the monitor keeps in the data buffer (monitor.S VIHIST):
+                                    // a stale one from an earlier game cleared (the card-direct launch's mirror write covers it)
+                                    static uint32_t sc64ss_vihist[4] __attribute__((aligned(16)));
+                                    memset(sc64ss_vihist, 0, sizeof(sc64ss_vihist));
+                                    data_cache_hit_writeback(sc64ss_vihist, sizeof(sc64ss_vihist));
+                                    dma_write(sc64ss_vihist, 0x1FFE0EE0UL, sizeof(sc64ss_vihist));
+                                }
                             }
                         }
                     }
@@ -2438,6 +2769,15 @@ static void load (menu_t *menu) {
     }
 
     menu->boot_params->clear_rdram = menu->load.rom_info.settings.clear_rdram_enabled;
+
+    // SC64SS: the reset button set to restart the game (Menu settings): the menu that comes up
+    // after a reset launches this ROM again (view_startup_init). A launch that stopped with a
+    // message is not noted.
+    if (menu->settings.reset_restarts_rom && (menu->next_mode == MENU_MODE_BOOT)) {
+        free(menu->settings.reset_rom_path);
+        menu->settings.reset_rom_path = strdup(path_get(menu->load.rom_path));
+        settings_save(&menu->settings);
+    }
 }
 
 static void deinit (void) {

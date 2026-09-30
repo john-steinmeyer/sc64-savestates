@@ -24,6 +24,14 @@ typedef int32_t fx;              /* 16.16 fixed point */
 
 #define FF_FAM_F3D      0u
 #define FF_FAM_F3DEX2   1u
+#define FF_FAM_F3DEX2CBFD 2u    /* Rare's dialect of F3DEX2 (Conker's Bad Fur Day): 0x10..0x1F draw four
+                                 * triangles each, 0xDD switches the lighting mode (no microcode load);
+                                 * everything the walk reads is F3DEX2's. FF_CBFD builds only. */
+#if defined(FF_HOST) || (defined(SC64SS_CARD_DIRECT) && SC64SS_CARD_DIRECT)
+#define FF_CBFD 1
+#else
+#define FF_CBFD 0                /* the plain blob is full, and no 64 MiB game runs on it */
+#endif
 
 struct ff_mem {                  /* the frame's RAM: base = a pointer to physical 0, limit = bytes */
     const uint8_t *base;
@@ -92,6 +100,12 @@ uint32_t ff_spare(const struct ff_map *m, uint32_t size, uint32_t limit);
 
 /* the family a microcode's version string names: 0/1, or -1 for none */
 int ff_family_of_string(const uint8_t *ucode_data, uint32_t len);
+
+#if FF_CBFD
+/* 1 when the microcode text at `text` (physical) is a known one of Rare's dialect: no version
+ * string names it, the CRC32 of its first 3 KiB does (the analyzer's KNOWN_TEXT table) */
+int ff_cbfd_text(const struct ff_mem *mem, uint32_t text);
+#endif
 
 /* walk the list at data_ptr with the family's encoding; seg = 16 initial segment bases
  * (physical, may be NULL); fills *m; returns 1 when the walk ended clean */

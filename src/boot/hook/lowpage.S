@@ -221,3 +221,32 @@ lp_preinstall:
     andi    $k1, $k1, 0x007C            # ExcCode: 0 is an interrupt
     j       lp_tramp
     ori     $k0, $k0, %lo(MON_INSTALL)
+
+#if SC64SS_LP_ALT
+# ---- 0x3C0: FRONT (the alternate layout, lowpage_alt.ld) ----------------------------
+# For a title whose boot clears the vector page below 0x300 after its first interrupts
+# (Pokemon Stadium 2: the engine, the exits, the helper, the data words and the gate all
+# went, and the watch exception on the clear's own store to the vector landed in zeros).
+# The engine lives at 0x360 in this layout (measured: that home survives the boot and the
+# clear; the engine's watch redirection then carries the vector across the clear), and
+# its tail lands here on every exception. The gate sits at 0x200 (the 6105 IPL3's window,
+# free for a title that is not a 6105 one) and is wiped with the rest: when its first
+# word is gone, the cart installer puts every fragment back, once the PI is idle (a cart
+# fetch under a game's DMA freezes the console); a busy PI means the game's own vector
+# this time and the install at a later exception. 11 words, k0/k1 only. SIAGE (0x3F0)
+# and DEFER (0x3F4) stay where the main layout has them.
+.section .text.f3c0, "ax"
+.global lp_front
+lp_front:
+    lui     $k0, 0x8000
+    lw      $k1, 0x0200($k0)            # the gate's first word: zero once the game's clear has been by
+    bnez    $k1, lp_gate                # present: the gate (its first instruction sets k0 itself)
+    lui     $k0, 0xA460                 # (delay slot)
+    lw      $k1, 0x0010($k0)            # PI_STATUS
+    andi    $k1, $k1, 0x0003            # DMA or IO busy: the cart is not fetchable now
+    bnez    $k1, GAME_TAIL              # the game's vector words; the install waits for another exception
+    lui     $k0, %hi(MON_INSTALL)       # (delay slot)
+    addiu   $k0, $k0, %lo(MON_INSTALL)
+    jr      $k0                         # the cart installer
+    nop
+#endif

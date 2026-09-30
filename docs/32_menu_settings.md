@@ -55,3 +55,7 @@ OFF: ROM saves are saved alongside the ROM file.
 ### Sound Effects
 
 The menu has default sound effects to improve the user experience. See the [sound documentation](./40_sound.md) for details. This setting is OFF by default.
+
+### Reset Button
+
+What the console's RESET button does while a game runs. **Menu**, the default, goes back to the menu. **Restart game** starts the game you were playing again from its beginning, the way RESET does on a normal cartridge: the menu comes up for a moment and loads the game again, with its save states, virtual pak and hotkeys set up as at any launch, so it takes a few seconds (longer for the biggest games). Hold `START` while pressing RESET to go to the menu instead. It needs the save-state routine in the game, which is what notices RESET: Save States, the virtual pak or a screenshot button on for it. In any other game, and while the game is paused by the save-state panel, FreeCam or the frame step, RESET goes to the menu. **Exit to menu** on the save-state panel always goes to the menu, and a ROM set to autoload is started by RESET either way. Stored as `reset_restarts_rom` in `config.ini`.

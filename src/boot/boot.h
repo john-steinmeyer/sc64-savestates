@@ -44,6 +44,9 @@ typedef struct {
     uint32_t boot_patch_count; /**< SC64SS: number of pairs */
     bool hook_borrowed; /**< SC64SS: borrowed-RAM mode: no resident hook; the vector-page gate and the cart monitor borrow its home per action */
     bool watch_reads; /**< SC64SS: the engine's watchpoint fires on reads of the vector at 0x180 too (false for titles whose own reads must not be redirected) */
+    uint32_t hook_staging_pi; /**< SC64SS: cart PI address of the hook's staging copy (0: the SDRAM staging area; the card-direct mode stages in the cart's flash) */
+    uint32_t hook_monitor_pi; /**< SC64SS: cart PI address of the borrowed-mode monitor (0: the SDRAM one; the card-borrowed placement's is in the flash, with its own vector-page fragments) */
+    bool hook_lp_alt; /**< SC64SS: the alternate vector-page layout (the engine at 0x360, the gate at 0x200, the cart installer puts the fragments back after the game's clear of the page): a title on the launcher's list, card-borrowed placement only */
 } boot_params_t;
 
 /**

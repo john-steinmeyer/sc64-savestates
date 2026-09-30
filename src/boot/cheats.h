@@ -20,7 +20,7 @@
  * @param cheat_list A pointer to an array of cheats to be installed.
  * @return true if the cheats were successfully installed, false otherwise.
  */
-bool cheats_install(cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads, bool libdragon);
+bool cheats_install(cic_type_t cic_type, uint32_t *cheat_list, const uint32_t *hook_blob, uint32_t hook_size, const uint32_t *boot_patches, uint32_t boot_patch_count, bool hook_borrowed, bool watch_reads, bool libdragon, uint32_t hook_staging_pi, uint32_t hook_monitor_pi, bool hook_lp_alt);
 
 // SC64SS: a ROM booted by libdragon's IPL3 (every libdragon ROM ships its own copy of that
 // open-source boot code). It clears all of RAM and loads the game's ELF before it hands

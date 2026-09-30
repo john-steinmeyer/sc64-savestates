@@ -41,6 +41,9 @@ static settings_t init = {
     .ss_key_panel = "R+Z+Start",
     .ss_key_step = "L",
     .ss_key_shot = "",
+    /* SC64SS: the reset button */
+    .reset_restarts_rom = false,
+    .reset_rom_path = "",
 };
 
 
@@ -106,6 +109,11 @@ void settings_load (settings_t *settings) {
     settings->ss_key_shot = strdup(ini_get_string(ini, "savestates", "screenshot_button", init.ss_key_shot));
     settings->ss_key_set_shot = ini_get_int(ini, "savestates", "screenshot_button_set", 0);
 
+    /* SC64SS: the reset button */
+    settings->reset_restarts_rom = ini_get_bool(ini, "menu", "reset_restarts_rom", init.reset_restarts_rom);
+    free(settings->reset_rom_path);
+    settings->reset_rom_path = strdup(ini_get_string(ini, "reset", "rom_path", init.reset_rom_path));
+
     ini_free(ini);
 }
 
@@ -148,6 +156,8 @@ void settings_save (settings_t *settings) {
     ini_set_int(ini, "savestates", "hotkey_save_set", settings->ss_key_set_save);
     ini_set_int(ini, "savestates", "hotkey_load_set", settings->ss_key_set_load);
     ini_set_int(ini, "savestates", "hotkey_panel_set", settings->ss_key_set_panel);
+    ini_set_bool(ini, "menu", "reset_restarts_rom", settings->reset_restarts_rom);   /* SC64SS: the reset button */
+    ini_set_string(ini, "reset", "rom_path", settings->reset_rom_path);
     ini_set_int(ini, "savestates", "hotkey_step_set", settings->ss_key_set_step);
     ini_set_string(ini, "savestates", "screenshot_button", settings->ss_key_shot);
     ini_set_int(ini, "savestates", "screenshot_button_set", settings->ss_key_set_shot);

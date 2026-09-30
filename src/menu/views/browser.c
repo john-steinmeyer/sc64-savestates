@@ -673,6 +673,37 @@ static void set_default_directory (menu_t *menu, void *arg) {
     settings_save(&menu->settings);
 }
 
+// SC64SS: Add to favorites from the file list, for a ROM; the footer says for two seconds what
+// it did (added at the end of the list, already there, or the list full)
+static char favorite_notice[64];
+static int favorite_notice_frames = 0;
+
+static void add_favorite (menu_t *menu, void *arg) {
+    (void) arg;
+    path_t *path = path_clone_push(menu->browser.directory, menu->browser.entry->name);
+    bookkeeping_favorite_result_t result = bookkeeping_favorite_add(&menu->bookkeeping, path, NULL, BOOKKEEPING_TYPE_ROM);
+    int position = bookkeeping_favorite_find(&menu->bookkeeping, path, NULL, BOOKKEEPING_TYPE_ROM) + 1;
+    path_free(path);
+    if (result == BOOKKEEPING_FAVORITE_FULL) {
+        snprintf(favorite_notice, sizeof(favorite_notice), "Favorites are full (%d)", FAVORITES_COUNT);
+    } else if (result == BOOKKEEPING_FAVORITE_PRESENT) {
+        snprintf(favorite_notice, sizeof(favorite_notice), "Already in favorites, number %d", position);
+    } else {
+        snprintf(favorite_notice, sizeof(favorite_notice), "Added to favorites, number %d", position);
+    }
+    favorite_notice_frames = 120;
+}
+
+static component_context_menu_t rom_context_menu = {
+    .list = {
+        { .text = "Show entry properties", .action = show_properties },
+        { .text = "Add to favorites", .action = add_favorite },
+        { .text = "Delete selected entry", .action = delete_entry },
+        { .text = "Set current directory as default", .action = set_default_directory },
+        COMPONENT_CONTEXT_MENU_LIST_END,
+    }
+};
+
 static component_context_menu_t entry_context_menu = {
     .list = {
         { .text = "Show entry properties", .action = show_properties },
@@ -689,6 +720,17 @@ static component_context_menu_t archive_context_menu = {
         COMPONENT_CONTEXT_MENU_LIST_END,
     }
 };
+
+// the R menu for the selected entry: an archive's, a ROM's (SC64SS: with Add to favorites) or any other file's
+static component_context_menu_t *entry_context_menu_get (menu_t *menu) {
+    if (menu->browser.archive) {
+        return &archive_context_menu;
+    }
+    if (menu->browser.entry && (menu->browser.entry->type == ENTRY_TYPE_ROM)) {
+        return &rom_context_menu;
+    }
+    return &entry_context_menu;
+}
 
 static void set_menu_next_mode (menu_t *menu, void *arg) {
     menu_mode_t next_mode = (menu_mode_t) (arg);
@@ -717,7 +759,7 @@ static component_context_menu_t settings_context_menu = {
 };
 
 static void process (menu_t *menu) {
-    if (ui_components_context_menu_process(menu, menu->browser.archive ? &archive_context_menu : &entry_context_menu)) {
+    if (ui_components_context_menu_process(menu, entry_context_menu_get(menu))) {
         return;
     }
 
@@ -830,7 +872,7 @@ static void process (menu_t *menu) {
         }
         sound_play_effect(SFX_EXIT);
     } else if (menu->actions.options && menu->browser.entry) {
-        ui_components_context_menu_show(menu->browser.archive ? &archive_context_menu : &entry_context_menu);
+        ui_components_context_menu_show(entry_context_menu_get(menu));
         sound_play_effect(SFX_SETTING);
     } else if (menu->actions.settings) {
         ui_components_context_menu_show(&settings_context_menu);
@@ -891,7 +933,16 @@ static void draw (menu_t *menu, surface_t *d) {
         menu->browser.entries == 0 ? STL_GRAY : STL_DEFAULT
     );
 
-    if (menu->current_time >= 0) {
+    if (favorite_notice_frames > 0) {
+        favorite_notice_frames--;
+        ui_components_actions_bar_text_draw(
+            STL_DEFAULT,
+            ALIGN_CENTER, VALIGN_TOP,
+            "%s\n"
+            "\n",
+            favorite_notice
+        );
+    } else if (menu->current_time >= 0) {
         ui_components_actions_bar_text_draw(
             STL_DEFAULT,
             ALIGN_CENTER, VALIGN_TOP,
@@ -908,7 +959,7 @@ static void draw (menu_t *menu, surface_t *d) {
         );
     }
 
-    ui_components_context_menu_draw(menu->browser.archive ? &archive_context_menu : &entry_context_menu);
+    ui_components_context_menu_draw(entry_context_menu_get(menu));
 
     ui_components_context_menu_draw(&settings_context_menu);
 
@@ -919,6 +970,7 @@ static void draw (menu_t *menu, surface_t *d) {
 void view_browser_init (menu_t *menu) {
     if (!menu->browser.valid) {
         ui_components_context_menu_init(&entry_context_menu);
+        ui_components_context_menu_init(&rom_context_menu);
         ui_components_context_menu_init(&archive_context_menu);
         ui_components_context_menu_init(&settings_context_menu);
         if (load_directory(menu)) {

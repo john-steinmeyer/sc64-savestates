@@ -236,7 +236,7 @@ void boot (boot_params_t *params) {
     // knows): nothing is installed, the retail way would patch boot code that is not the
     // retail one's, and the game runs as it always did (the menu keeps the routine out too)
     bool cheats_installed = (libdragon && (handoff == 0)) ? false :
-        cheats_install(cic_type, params->cheat_list, params->hook_blob, params->hook_size, params->boot_patches, params->boot_patch_count, params->hook_borrowed, params->watch_reads, libdragon);
+        cheats_install(cic_type, params->cheat_list, params->hook_blob, params->hook_size, params->boot_patches, params->boot_patch_count, params->hook_borrowed, params->watch_reads, libdragon, params->hook_staging_pi, params->hook_monitor_pi, params->hook_lp_alt);
 
     if (libdragon && (handoff != 0) && cheats_installed) {
         boot_libdragon_stage(base, handoff);

@@ -149,6 +149,8 @@ typedef struct {
     } load_pending;
 
     bool hotkeys_for_rom;       /**< SC64SS: the hotkeys view edits the loaded ROM's own (else the menu's) */
+    bool exit_start;            /**< SC64SS: this start was asked for by the routine (Exit to menu, a suspend), not the reset button */
+    bool reset_start;           /**< SC64SS: the routine saw the reset button pressed before this start */
     struct {
         int64_t check_code;     /**< SC64SS: the game whose pak the virtual paks view opens on (0: the list of every pak) */
         bool from_rom;          /**< SC64SS: opened from the game's options, so back returns there */

@@ -6,7 +6,11 @@ words at ROM offsets 0x10 and 0x14) and `<slot>` counts from 0, with no fixed co
 since 1.8 the files are the game's list of slots, and the menu adds empty ones as
 the used ones grow. The file is a byte
 copy of the start of the state slot in cartridge memory, so the two share one
-layout. Everything is big-endian, as the N64 stores it.
+layout. A 64 MiB game has no slots in cartridge memory: its files are written straight
+from the console in the same layout, and it has two more, `<checkcode>.stx`, a state
+file no slot owns (FreeCam on the live game saves the moment there first), and
+`<checkcode>.stash`, the routine's working room during a save or a load. Everything is
+big-endian, as the N64 stores it.
 
 This is format version 2. The rules a reader should follow are at the end; a
 writer of a later version keeps to them so that files made today stay loadable.
@@ -21,7 +25,7 @@ writer of a later version keeps to them so that files made today stay loadable.
 | 0x3E00 | 512 | a zeroed sector (see "Writing") |
 | 0x4000 | `image_len` | the RAM image, from address 0x80000000 |
 
-A state written by this build (0.3.4-ss1.6, hook version 13 as in 1.5; version 11 and 12 states have the same shape) has `image_len`
+A state written by this build (0.3.4-ss2.0, hook version 14, or 15 for the 64 MiB games; versions 11 to 13 have the same shape) has `image_len`
 = 0x800000: all 8 MiB of RAM (the 128 KiB the routine borrows come from its stash,
 so the image holds the game's bytes), followed at 0x804000 by the RSP's memories
 (region kind 1, below), so the file's used length is 0x806000 bytes, which is also
@@ -46,7 +50,7 @@ its allocated size. States written by the 0.3.3-ss1.0 build have `image_len` =
 | 0x30 | `reraise_sp` | the interrupt the state was taken on: 0 VI, 1 RSP, 2 RDP. Hook version 12 and up: 0x10 set means a VI moment the routine held while the RSP's queue ran dry (libdragon games), with bit 0 (RSP) and bit 1 (RDP) the interrupts that arrived during the hold, raised again by a load; 0x20 set means the RSP was halted in its wait for the CPU and runs on from there after a load |
 | 0x34 | `memsize` | the game's `osMemSize` |
 | 0x38 | `dma_ticks`, `wait_frames` | how long the save took (diagnostic) |
-| 0x40 | `hook_version` | the hook that wrote it. 13 and up: the RDP's pipe was idle at the moment for a game whose lists end in a full sync (a loader runs that sync for an older state taken with the pipe busy; see rcp below) |
+| 0x40 | `hook_version` | the hook that wrote it. 13 and up: the RDP's pipe was idle at the moment for a game whose lists end in a full sync (a loader runs that sync for an older state taken with the pipe busy; see rcp below). 14 and up: vi[14] and vi[15] may hold the sound chip's queue (see vi). 15 and up: rcp[4] and rcp[5] may hold its playback rate (see rcp) |
 | 0x44 | `stamp_time` | cart RTC time word (BCD: weekday, hour, minute, second) |
 | 0x48 | reserved[6] | PI_DRAM_ADDR, PI_CART_ADDR, SI_DRAM_ADDR, DPC_STATUS, SP_STATUS, CP0 Count |
 | 0x60 | `hdr_len` | 0x1000 |
@@ -56,10 +60,10 @@ its allocated size. States written by the 0.3.3-ss1.0 build have `image_len` =
 | 0x74 | `slot_len` | the slot stride the writer used (informational) |
 | 0x78 | `regions_n` | entries used in the region table (1 in this build: the RSP's memories; 0 in ss1.0 files) |
 | 0x7C | `card_slot` | 1.8 and up: the slot number plus one the state was saved into (0 in earlier files) |
-| 0x80 | `vi[16]` | the VI registers at capture |
+| 0x80 | `vi[16]` | the VI registers at capture in vi[0..13]; vi[1] is the game's own frame buffer even when the routine had moved the display to another one for its visit. Hook version 14 and up, the 64 MiB games' states: vi[14] is the sound chip's queue at the moment (bit 29 set when recorded, bit 31 full, bit 30 busy, the low 18 bits the length left in the buffer playing) and vi[15] the game's usual buffer length (0 when not measured); a load replays the queue as silence of the same lengths. Zero in other states |
 | 0xC0 | CPU context | 32 GPRs, LO, HI, 32 FPRs (64-bit each), Status, EPC, FCR31, EntryHi, then 32 TLB entries of 4 words |
 | 0x4E0 | regions[8] | {kind, offset, length, arg} per entry. Kind 1 is the RSP's memories: 4 KiB DMEM then 4 KiB IMEM at `offset` (0x804000), `length` 0x2000, `arg` the RSP's program counter at capture. Other kinds may come in later versions |
-| 0x560 | rcp[8] | hook version 9 and up: DPC_START, DPC_END, DPC_CURRENT and SP_PC at capture, the rest zero (earlier writers left zeros; a loader with CURRENT == END and the RDP idle puts the RDP back there; one whose DPC_STATUS in reserved[3] shows the pipe busy with the command unit idle, the RSP's task done, and no RDP interrupt as the moment, runs the list's full sync in place at its end, lending the last eight bytes to a sync of its own for the run when they no longer hold one, so the RDP ends at the saved END and the interrupt the saved world waits for arrives) |
+| 0x560 | rcp[8] | hook version 9 and up: DPC_START, DPC_END, DPC_CURRENT and SP_PC at capture, the rest zero (earlier writers left zeros; a loader with CURRENT == END and the RDP idle puts the RDP back there; one whose DPC_STATUS in reserved[3] shows the pipe busy with the command unit idle, the RSP's task done, and no RDP interrupt as the moment, runs the list's full sync in place at its end, lending the last eight bytes to a sync of its own for the run when they no longer hold one, so the RDP ends at the saved END and the interrupt the saved world waits for arrives). Hook version 15 and up, the 64 MiB games' states: rcp[4] holds `AR` (0x4152) in its top half and the value for AI_DACRATE in the bottom half, the sound chip's playback rate as the routine timed it when it stepped in (0 when it was not timed), which a load writes back; rcp[5] is the timing it came from (bytes << 20, then CPU clock ticks) |
 | 0x580 | rsp_gpr[32] | hook version 11 and up: word 0 is the marker `RSPG` (0x52535047) when words 1..31 hold the RSP's scalar registers 1..31 at capture, zero otherwise. Written for games built with libdragon, whose RSP command queue sleeps with its place in a register; a loader puts them back after the RSP's memories and program counter |
 
 The checksum is a rotate-left-by-one and exclusive-or over the 1024 header words,

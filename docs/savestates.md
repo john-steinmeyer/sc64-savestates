@@ -20,20 +20,20 @@ It also gives games that use one a **virtual Controller Pak**, so games that sav
 a pak save to the SD card whether or not a pak is plugged in, and it keeps the first
 release's slow motion and frame step as a per-game option.
 
-I've tested 298 games so far; 280 work (see
+I've tested 299 games so far; 281 work (see
 [Compatibility](#compatibility)).
 
 ## What you need
 
-- A SummerCart64 in an original N64. That is what this is developed and tested on; I
-  have not tried it on the Analogue 3D or the M64.
+- A SummerCart64 in an original NTSC N64. That is what this is developed and tested on,
+  with NTSC games; I have not tried a PAL console, the Analogue 3D or the M64.
 - An Expansion Pak. The top 128 KiB of it is the working room the routine borrows
   during a save or a load (and gives back, byte for byte, before the game runs
   again), so states are not possible on a 4 MiB console.
-- ROMs up to 48 MiB. The states are kept in the cartridge memory above the ROM;
-  the bigger the ROM, the fewer slots fit, and a 64 MiB ROM leaves no room at all
-  (the option refuses to switch on for those, and such a game gets no virtual pak
-  either).
+- ROMs up to 64 MiB. The states in use are kept in the cartridge memory above the
+  ROM; the bigger the ROM, the fewer fit. A 64 MiB ROM fills that memory, so its
+  states go straight to the card and back, and it gets no virtual pak (see
+  [The 64 MiB games](#the-64-mib-games)).
 - Free space on the SD card: 8 MiB per slot per game. A game with save states on
   keeps six empty slots ready beyond its last used one (48 MiB, made at launch) and
   the list grows as they fill (see [Slots and the card](#slots-and-the-card)); plus
@@ -79,8 +79,11 @@ so if you try; switch the option on for the game and launch it again. The one
 cost: games that use every byte of the Expansion Pak have no room for the routine and
 never boot with it on. The menu refuses the option for the ones it knows about (Donkey
 Kong 64, Perfect Dark, Indiana Jones and the Infernal Machine, San Francisco Rush 2049,
-Tony Hawk's Pro Skater 3, whose high-resolution mode takes the memory)
-and launches them on the cartridge engine whatever their `.ini` says. If a game not on
+Tony Hawk's Pro Skater 3, whose high-resolution mode takes the memory, and Resident
+Evil 2, whose cutscenes use it)
+and launches them on the cartridge engine whatever their `.ini` says. Pokemon Stadium 2
+is refused too, for another reason: its boot clears the memory the resident routine
+would use. If a game not on
 that list shows a black screen with it on, switch it off. The same goes for a game's
 optional high-resolution mode, which uses the extra memory: Castlevania: Legacy of
 Darkness boots in low resolution with the option on, and not in high. Stored as
@@ -115,7 +118,8 @@ it was set at or after the last of them.
 
 Boot the game normally. Save states and cheats can be on at the same time; with
 GameShark codes loaded the engine sits at its classic place at the top of RAM, as in
-the stock menu, and the states and the pak ride along with it.
+the stock menu, and the states and the pak ride along with it. Pokemon Stadium 2 is the
+exception: with codes it boots with the codes alone.
 
 ## In the game
 
@@ -134,7 +138,8 @@ load, then carries on. With Slow motion on for the game, "STATE SAVED" or "STATE
 LOADED" shows for a moment in the bottom-left corner. With it off (the default)
 nothing is drawn on screen, and the cartridge LED is your confirmation. After a save
 the LED blinks for a couple of seconds while the state is copied to the SD card; you
-can keep playing meanwhile.
+can keep playing meanwhile. The 64 MiB games take longer, about five seconds for a save
+and three for a load, since the state goes to and from the card while the game waits.
 
 The panel lists every slot of the game with the date and time of each state and a
 thumbnail of the selected one, eight rows at a time: up and down (D-pad or stick)
@@ -151,7 +156,10 @@ slots page, and on the Game page's rows that have no value of their own):
   Anything still on its way to the card is written first (a state being mirrored,
   the virtual pak's last writes, the game's own save), then the cartridge's
   bootloader is switched back in and started, the path a reset takes. **A** asks
-  for confirmation.
+  for confirmation. The console's reset button goes to the menu as well, unless
+  **Reset Button** in the menu's settings is on **Restart game**: then the menu loads
+  the game again, save states armed, in a few seconds (hold **Start** while pressing
+  reset for the menu).
 - **Suspend to slot N**: saves the game into the selected slot with a resume mark,
   then exits as above. The next launch of that game loads the slot by itself about
   a second after the game is up, then clears the mark; the state stays in the slot
@@ -190,7 +198,8 @@ the next launch; a deleted state's slot stays, empty, so the numbers never shift
 full card gives fewer empty slots than that, and the panel's last row says so;
 deleting states frees their slots at once. Every launch looks at each slot file once,
 about a tenth of a second a file at most: a game with 26 slots takes two seconds longer
-to start than one with six, a game with 200 slots about fifteen.
+to start than one with six, a game with 200 slots about fifteen. A second bar, under
+the one for the ROM, shows that part of the launch.
 
 The cartridge's own memory holds the states in use, as many as fit above the ROM (the
 table below). It is a cache: a save goes there and to the card right after (the LED
@@ -207,7 +216,7 @@ makes room. The game never notices which.
 | 32 MiB | 3 |
 | 40 MiB | 2 |
 | 48 MiB | 1 |
-| 64 MiB | none |
+| 64 MiB | none (see [The 64 MiB games](#the-64-mib-games)) |
 
 States survive power cycles, since every slot is its file on the card. The files are
 plain copies of
@@ -218,6 +227,30 @@ other. The format is versioned and later builds will keep reading these files.
 (State files made by the earlier 0.3.3-ss1.0 build are 16 KiB shorter; this build
 makes them afresh the first time the game boots, so states from that build are not
 carried over.)
+
+## The 64 MiB games
+
+Conker's Bad Fur Day, Resident Evil 2 and Pokemon Stadium 2 are 64 MiB ROMs. They fill
+the cartridge memory, so their states go straight to the card and back while the game
+waits. Switch Save States on for them as for any other game. I tried the US versions,
+and the European Pokemon Stadium 2 saves and loads too.
+
+- A save takes about five seconds and a load about three.
+- The hotkeys, the slot panel with its thumbnails and screenshots work in all three, and
+  FreeCam in Conker's Bad Fur Day and Pokemon Stadium 2. Resident Evil 2's rooms are
+  pre-rendered pictures with the characters drawn over them, which FreeCam cannot redraw:
+  it says NO FRAME TO FLY and loads the state.
+- No virtual pak: none of the three saves to a Controller Pak.
+- Slow motion is refused for Resident Evil 2 (its cutscenes use the memory the resident
+  routine would take) and for Pokemon Stadium 2 (its boot clears the memory the resident
+  routine would use). Stadium 2 with GameShark codes boots with the codes alone.
+- In Stadium 2's battles the panel can open with a brief flicker of noise at the top or
+  the bottom of the picture.
+- Each of them keeps two more files next to its slots, an 8 MiB one for FreeCam on the
+  live game and a 256 KiB one for the routine's working room, and the menu keeps a 256 KiB
+  file in `sd:/menu/`.
+- The launch takes about a second longer: the menu writes the routine into the
+  SummerCart64's flash first.
 
 ## Screenshots
 
@@ -288,8 +321,9 @@ game had not finished a frame, a 2D screen, a game with a rendering engine of it
 or a frame spread over several rendering tasks is refused with a message and the state
 loads as usual. Of the games tried so far, Super Mario 64, GoldenEye 007, Mario Kart 64,
 Wave Race 64, Banjo-Tooie, Turok: Dinosaur Hunter, Ocarina of Time, South Park and
-Donkey Kong 64 fly; Jet Force Gemini and Star Wars: Rogue Squadron (their own
-microcode), Perfect Dark (a frame in pieces), Harvest Moon 64 (2D) and Star Wars
+Donkey Kong 64, Conker's Bad Fur Day and Pokemon Stadium 2's battles fly; Jet Force
+Gemini and Star Wars: Rogue Squadron (their own microcode), Perfect Dark (a frame in
+pieces), Harvest Moon 64 (2D), Resident Evil 2 (pre-rendered rooms) and Star Wars
 Episode I: Racer in a race (its list there is not the frame on screen) decline.
 
 ## Virtual Controller Pak
@@ -381,7 +415,8 @@ reads that other games need; `watch_reads=0` in a ROM's ini does the same for an
 title), and GoldenEye 007 gets the cartridge routine with its ten scratch words moved
 (the game keeps its own TLB handler at the start of the exception page, where the
 routine usually parks registers) and no virtual pak (the pak's stub would land in that
-handler too; the game has no Controller Pak use).
+handler too; the game has no Controller Pak use). The three 64 MiB games were added
+later and tried by hand and from the PC.
 
 | Game | Result | Notes |
 | --- | --- | --- |
@@ -431,7 +466,7 @@ handler too; the game has no Controller Pak use).
 | Clay Fighter: Sculptor's Cut | works |  |
 | Command & Conquer | works |  |
 | Command and Conquer 3D | works |  |
-| Conker's Bad Fur Day | works | 64 MiB ROM: boots as in the stock menu, no states, no pak |
+| Conker's Bad Fur Day | works | 64 MiB ROM: its states go straight to the card (see [The 64 MiB games](#the-64-mib-games)) |
 | Cruis'n Exotica | works |  |
 | Cruis'n USA | works |  |
 | Cruis'n World | works |  |
@@ -583,6 +618,7 @@ handler too; the game has no Controller Pak use).
 | Pokemon Snap | works |  |
 | Pokemon Snap Station | works |  |
 | Pokemon Stadium | works |  |
+| Pokemon Stadium 2 | works | 64 MiB ROM: its states go straight to the card; the menu refuses Slow motion for it (its boot clears the memory the resident routine would use) |
 | Polaris SnoCross | works |  |
 | Power Rangers: Lightspeed Rescue | does not work | the game unpacks its code at boot and the engine never arms; needs a per-title entry |
 | Powerpuff Girls, The: Chemical X-Traction | works |  |
@@ -600,7 +636,7 @@ handler too; the game has no Controller Pak use).
 | Razor Freestyle Scooter | works |  |
 | Re-Volt | works |  |
 | Ready 2 Rumble Boxing | works |  |
-| Resident Evil 2 | works | 64 MiB ROM: boots as in the stock menu, no states, no pak |
+| Resident Evil 2 | works | 64 MiB ROM: its states go straight to the card; FreeCam declines (the rooms are pre-rendered pictures); the menu refuses Slow motion for it (its cutscenes use the memory the resident routine would take) |
 | Road Rash 64 | works |  |
 | Roadsters | works |  |
 | Robotech: Crystal Dreams | works |  |
@@ -794,7 +830,8 @@ cannot find.
   the game does not redraw keeps the message.
 - Freeze length: Saving copies 8 MiB through the cartridge port at about
   4 MB/s; the two seconds are what the hardware allows. A load is the same copy in
-  the other direction.
+  the other direction. The 64 MiB games stream the state to and from the card
+  instead, about five seconds for a save and three for a load.
 - A copy to the card interrupted by a power cut empties that slot, including
   the state it held before. The alternative, a half-written state that loads,
   is worse. The other slots are untouched.
@@ -834,7 +871,7 @@ This build hangs a second routine off the same path, and keeps it off the consol
 - When a save or a load is due, the monitor waits for a clean moment (a frame
   boundary with the RSP halted, the RDP idle and no cartridge or controller
   transfer in flight), copies the top 128 KiB of RAM to a stash on the cartridge,
-  copies the 110 KB **hook** in its place, and runs it. The hook captures the CPU
+  copies the 128 KiB **hook** in its place, and runs it. The hook captures the CPU
   context (all registers, the FPU, the TLB, Status and EPC), the pending interrupt
   mask, the RDP and RSP status bits, the DMA address registers, the video registers
   and the CPU cycle counter, copies RAM to the cartridge with the PI DMA engine (its
@@ -884,6 +921,20 @@ and a load raises them again.
 A build that logs over USB drives the cartridge's command registers itself, so for
 these ROMs each piece of the copy to the card is written while the game is held.
 
+A 64 MiB ROM fills the cartridge memory that holds the monitor, the hook's staging copy
+and the state slots for every other game. For these the menu writes the hook and its
+tables into the SummerCart64's flash at launch, in the area it uses for the part of a
+bigger ROM past 64 MiB, and the monitor runs from there. A save or a load streams the
+state between RAM and its file on the card through the cartridge's 4 KiB data buffer,
+eight sectors a command, with the game frozen, and the 128 KiB the hook borrows go to a
+card file of their own for the length of the visit. Pokemon Stadium 2 clears the
+exception-vector page below 0x300 early in its boot, which takes the engine with it, so
+it gets a second layout: the engine at 0x360, which the clear spares, and a routine on the
+cartridge that puts the rest of the page back before the gate runs. The sound chip's
+playback rate cannot be read back, and Pokemon Stadium 2 changes it between scenes, so
+for these games the monitor times the chip for a few milliseconds as it steps in, and the
+state carries the rate for a load to set again.
+
 Everything the routine does with the cartridge goes through the PI bus, which is
 also how the game reads its ROM. It therefore saves and restores the DMA address
 registers on every entry, never touches the bus while a game transfer is running,
@@ -907,7 +958,14 @@ a moment after the game's last write), the hook quiets the RSP, the RDP, the aud
 and the video the way the menu does before it boots a ROM, tells the SC64 to map
 its bootloader at 0x10000000 again, and runs that image's IPL3 from SP DMEM with
 the menu's own boot routine in SP IMEM and the registers the PIF sets at power-on.
-The bootloader then loads sc64menu.n64 from the card. Suspend is a save with a mark
+The bootloader then loads sc64menu.n64 from the card. Just before the jump, the hook
+leaves a word in the SC64's data buffer that tells the menu this start was asked for.
+The reset button leaves a different word: the console raises an interrupt half a
+second before it resets, and the routine's per-frame check writes the word when it
+sees it (so a game paused by the panel, FreeCam or the frame step leaves none). The
+menu clears both at every start and restarts the game (Reset Button on Restart game)
+only after the second, as the reset type the menu is booted with can't be relied on
+to tell a reset from a power-on. Suspend is a save with a mark
 in the header; at the next launch the menu spots the mark in the slot's file and
 hands the slot to the hook, which loads it as a combo would once the game polls its
 controller, then clears the mark on the cartridge and in the file. One thing a state

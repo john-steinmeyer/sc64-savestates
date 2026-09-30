@@ -22,6 +22,31 @@
 /* development extras from the routine's live-RAM days (the freeze table, glides, the pak
  * trace and their mailbox commands): out of the development build too unless asked for,
  * the blob being within a few KiB of its 128 KiB home */
+/* SC64SS_CARD_DIRECT=1 (build.sh; the hook64 blob): the card-direct mode for ROMs that fill the
+ * cartridge's SDRAM (64 MiB). The staging copy and the launch tables sit in the cart's flash,
+ * the index and the screenshot header in RAM, and states and screenshots go to their files on
+ * the card straight from RAM through the data buffer, the game frozen: no cart slot, no mirror,
+ * no borrowed placement (resident, always) and no virtual pak. Everything else is the same blob. */
+#ifndef SC64SS_CARD_DIRECT
+#define SC64SS_CARD_DIRECT 0
+#endif
+/* AI_REPLAY: a save records the audio interface's FIFO at the moment (state header vi[14]: the
+ * valid bit, full, busy, the remaining length of the DMA playing; vi[15]: the game's usual
+ * buffer length, from the resident tick) and a load replays it as silence of the same lengths
+ * in place of the fixed block: the faithful restoration. Built while chasing Pokemon Stadium
+ * 2's dead sound after a load of a streamed scene (the probe: idle at every tick for 52 s); that
+ * turned out to be a cartridge transfer still running at the moment, which the borrowed moment
+ * rule never checked (monitor.S mt_why, reason 8 now), and the replay changed nothing there on
+ * its own. The card-direct builds for now: the plain blob is full (the .bss change first). */
+#define AI_REPLAY       SC64SS_CARD_DIRECT
+#define AI_REC_VALID    0x20000000u
+#define AI_REC_BUSY     0x40000000u
+#define AI_REC_FULL     0x80000000u
+#if SC64SS_CARD_DIRECT
+#define CD_UNUSED __attribute__((unused))   /* routines of the cart-slot path that this mode never calls */
+#else
+#define CD_UNUSED
+#endif
 
 typedef volatile uint32_t vu32;
 typedef volatile uint16_t vu16;
@@ -30,6 +55,9 @@ typedef volatile uint16_t vu16;
 #define PI_STATUS       (*(vu32 *)0xA4600010u)
 
 #define BRAM_BASE       0xBFFE0000u
+#define VIHIST_BRAM     0xBFFE0EE0u  /* borrowed mode: the last three frame buffers the VI showed, kept by the
+                                      * monitor's tick (monitor.S VIHIST: +0 the latest, +4, +8; +0xC 'VIH1'):
+                                      * the panel's other buffer when the one on screen reaches into our home */
 #define SC64_REGS_BASE  0xBFFF0000u
 #define SC64_IDENTIFIER (SC64_REGS_BASE + 0x0Cu)
 #define SC64_KEY        (SC64_REGS_BASE + 0x10u)
@@ -91,8 +119,12 @@ typedef volatile uint16_t vu16;
 #define KEY_UNLOCK_1    0x5F554E4Cu
 #define KEY_UNLOCK_2    0x4F434B5Fu
 
-#define HOOK_VERSION    13u /* in every state header: 13 = the moment has the RDP's pipe idle for a game that sends full syncs (a load runs the frame's sync for an older state taken with it busy); 12 = a moment the hold drained (reraise_sp: RR_HOLD, the lines that came pending in bits 0/1, RR_RSP_RUN = the RSP runs on from its status wait); 11 = the RSP's scalar registers (rsp_gpr: a libdragon game's queue sleeps with its place in them); 10 = the RSP's memories and PC as region 1; 9 = the RDP's command pointers and SP_PC (rcp[]); 8 = format v2 (header first); 7 = PI/SI address
+#if AI_REPLAY
+#define HOOK_VERSION    15u /* (card-direct) 15 = the audio interface's rate at the moment in rcp[4]: 'AR' << 16 | AI_DACRATE's value, from the monitor's timing of the DMA playing at the borrow's first instant (0: not timed; the register is write-only), set again by a load; the rest as below */
+#else
+#define HOOK_VERSION    14u /* in every state header: 14 = the audio interface's FIFO at the moment in vi[14] (AI_REC_*: valid, full, busy, the remaining length) and the game's usual buffer length in vi[15], replayed as silence by a load (AI_REPLAY builds record them; vi[14] = 0 before); 13 = the moment has the RDP's pipe idle for a game that sends full syncs (a load runs the frame's sync for an older state taken with it busy); 12 = a moment the hold drained (reraise_sp: RR_HOLD, the lines that came pending in bits 0/1, RR_RSP_RUN = the RSP runs on from its status wait); 11 = the RSP's scalar registers (rsp_gpr: a libdragon game's queue sleeps with its place in them); 10 = the RSP's memories and PC as region 1; 9 = the RDP's command pointers and SP_PC (rcp[]); 8 = format v2 (header first); 7 = PI/SI address
                             * registers, RCP status and the clock carried by the state; 6: the first states */
+#endif
 
 #define ST_OK           0u
 #define ST_BAD_CMD      2u
@@ -192,6 +224,33 @@ typedef volatile uint16_t vu16;
 #define STASH_PI        0x13FC0000u
 #define STASH_LEN       0x00020000u
 #define CTX_PI          0x13FBE000u  /* a loaded state's CPU context, for the monitor's load epilogue */
+/* card-direct mode (SC64SS_CARD_DIRECT, 64 MiB ROMs): the cart's flash ("ROM extended", PI
+ * 0x14000000.., read-only from here, the menu programs it at launch) holds the staging copy in
+ * its first 128 KiB block and the launch tables in the second; the state image streams through
+ * a 4 KiB window in the data buffer (BlockRAM, PI 0x1FFE0000..), 8 sectors a command. */
+#define CD_STAGING_PI   0x14000000u  /* block 0: the blob with its config patched in (the boot patcher reads it here) */
+#define CD_MAPS_PI      0x14020000u  /* block 1: the card slots' sector maps ('SLM1' ..., SLOT_MAPS_LEN) */
+#define CD_SHOT_TABLE_PI 0x1402E000u /* the screenshot file's run table ('SDR1' ...) */
+#define CD_INDEX_PI     0x1402F000u  /* the slot index as the menu built it (copied to RAM at the first tick) */
+#define CD_SHOT_HDR_PI  0x14030000u  /* the screenshot file's header block as the menu wrote it (RAM too) */
+#define CD_SCRATCH_TABLE_PI 0x14031000u /* the FreeCam scratch file's run table (<checkcode>.stx, marker slot CD_SCRATCH_N) */
+#define CD_WIN_PI       0x1FFE1000u  /* the streaming window: the data buffer's second 4 KiB (the mailbox has the first) */
+#define CD_WIN_SECTORS  8u
+#define CD_CFG_MIRROR   0xBFFE0E00u  /* the PC's view of hook_cfg (192 bytes in the data buffer: the view's
+                                     * progress and command words live there instead of in the staged copy) */
+#define CD_SCRATCH_N    0xFFFFu      /* the scratch file's marker slot number */
+/* the card-borrowed placement (a 64 MiB ROM whose game uses all of RAM): the monitor in the
+ * flash tables' block, run in place; the hook's home stashed to a card file through the
+ * window (monitor.S CARD_STASH; the file's first sector in the flash tables); the context
+ * for the load epilogue and the cfg mirror in the data buffer */
+#define CD_MONITOR_PI   0x14038000u  /* the monitor's flash home (16 KiB; +0x3000 must share its 64 KiB page) */
+#define CD_MONITOR_KSEG1 0xB4038000u
+#define CD_STASH_INFO_PI 0x14032000u /* 'STSH', the stash file's first sector, its sectors (256) */
+#define CD_CTX_PI       0x1FFE0500u  /* a loaded state's CPU context for the monitor (0x23C bytes: +0x234 the AI word, +0x238 the PI line; then +0x23C/+0x240 the AI's timing, monitor.S mon_airate) */
+#define CD_CTX_KSEG1    0xBFFE0500u
+#define CD_CFG_MIRROR_PI 0x1FFE0E00u /* the cfg mirror's PI address (the menu writes it at launch) */
+#define CD_CB_FLAGS     0xBFFE0EC0u  /* the monitor's flags word (bit 0: the card initialised) */
+#define CD_TOKEN        1u           /* what card_bind returns instead of a cart address: the bodies go by st_card */
 #define VPAK_LEN        0x00008000u
 #define DMA_TIMEOUT_TICKS (46875u * 40u) /* 40 ms */
 #define CMD_TIMEOUT_TICKS (46875u * 5u)  /* 5 ms for an SC64 MCU command */
@@ -331,6 +390,37 @@ static uint32_t vi_frz_active = 0, vi_frz_base0 = 0;
 static uint32_t vi_frz_prev = 0;              /* last line seen while frozen (wrap = new field) */
 static uint32_t vi_frz_count = 0;             /* fields aimed during the current freeze */
 static uint32_t frz_count0 = 0, frz_compare0 = 0;   /* the game's clock when the freeze began */
+#if AI_REPLAY
+static uint32_t ai_moment = 0;        /* the audio FIFO as the game left it, at this exception's entry (AI_REC_*) */
+static uint32_t frz_ai0 = 0;          /* ... at the freeze's start (the audio drains while the panel holds the game) */
+static uint32_t ai_len_typ = 0;       /* the game's usual buffer length: the largest remaining length the tick saw, decaying */
+static uint32_t ai_len1 = 0, ai_len2 = 0;   /* a load's silence: the first DMA's length, the second's (0: none) */
+static uint32_t ai_rate_bytes = 0, ai_rate_ticks = 0;   /* the monitor's timing of the DMA playing at the borrow's first instant (CTX+0x23C/+0x240) */
+
+/* v15: the AI_DACRATE value that timing gives, for the state ('AR' << 16 | it; 0: too short to tell,
+ * or out of range): the console's AI clock by its TV type over the rate, the rate snapped to a
+ * standard one within 1.5% as the slow motion's measurement does (ai_measure_now), rounded as
+ * osAiSetFrequency rounds */
+static uint32_t ai_rate_word(uint32_t bytes, uint32_t ticks) {
+    if ((bytes < 256u) || (bytes > 0xFFFFu) || (ticks < 46875u * 2u)) return 0u;   /* under 2 ms: too coarse */
+    uint32_t q = bytes * 46875u;                         /* bytes a second = bytes * 46,875,000 / ticks (Count: 46.875 MHz) */
+    uint32_t bps = (q / ticks) * 1000u + ((q % ticks) * 1000u) / ticks;
+    uint32_t rate = bps / 4u;                            /* stereo 16-bit samples */
+    static const uint32_t rates[8] = {8000u, 11025u, 16000u, 22050u, 24000u, 32000u, 44100u, 48000u};
+    for (uint32_t i = 0; i < 8u; i++) {
+        uint32_t diff = (rate > rates[i]) ? (rate - rates[i]) : (rates[i] - rate);
+        if (diff * 200u <= rates[i] * 3u) {
+            rate = rates[i];
+            break;
+        }
+    }
+    if ((rate < 4000u) || (rate > 64000u)) return 0u;
+    uint32_t tv = *(vu32 *)0x80000300u;                  /* osTvType: 0 PAL, 1 NTSC, 2 MPAL */
+    uint32_t clock = (tv == 0u) ? 49656530u : ((tv == 2u) ? 48628316u : 48681812u);
+    uint32_t d = (clock + rate / 2u) / rate;             /* the divider; the register takes it less one */
+    return 0x41520000u | ((d - 1u) & 0xFFFFu);
+}
+#endif
 /* v12: the hold (state_hold). A vblank moment drained of the RSP's and RDP's work: the lines
  * that came pending meanwhile, for the header, and the game's clock at the hold's start,
  * which the freeze hands back as if the hold were part of it. */
@@ -338,6 +428,9 @@ static uint32_t frz_count0 = 0, frz_compare0 = 0;   /* the game's clock when the
 #define RR_DP           2u          /* re-raise the DP line (alone: the moment was the DP's) */
 #define RR_HOLD         0x10u       /* a VI moment the hold drained; bits 0/1 came pending during it */
 #define RR_RSP_RUN      0x20u       /* the RSP stood in its status wait: it runs on from the wait's first word */
+#define RR_PI           0x40u       /* card-direct: the moment held a cartridge transfer's end the world had not taken (the
+                                     * PI line up where the game listens, monitor.S mt_why): a load raises it again */
+#define RR_VI           0x80u       /* with RR_PI: the VI line was up too (the VI event belongs to the moment) */
 #define HOLD_TICKS      (46875u * 90u)   /* the hold at most: five and a half frames */
 #define HOLD_SIG_TICKS  (46875u * 4u)    /* a status wait this long, with its line pending, is for the CPU */
 #define HOLD_TRIES      4u          /* holds per request; then the plain wait runs out as before */
@@ -427,6 +520,9 @@ static void vi_frz_begin(uint32_t at_vi) {
     vi_frz_frozen = 1;
     frz_count0 = hold_clock ? hold_count0 : c0_count();     /* a held moment: the clock at the hold's start */
     frz_compare0 = hold_clock ? hold_compare0 : c0_compare();
+#if AI_REPLAY
+    frz_ai0 = ai_moment;                                    /* the FIFO as the moment had it */
+#endif
     vi_frz_active = 0;
     vi_frz_base0 = 0;
     vi_frz_count = 0;
@@ -669,6 +765,9 @@ static void dcache_writeback_all(void) {
 #define STATE_PREFER_VI 30u                      /* VI frames to hold out for a frame boundary before taking an SP/DP-done moment */
 #define STATE_PIPE_WAIT 90u                      /* VI frames the RDP's pipe flag counts against a moment; then let go (a game without full syncs) */
 static uint32_t borrow_mi = 0;                   /* borrowed mode: the RCP interrupt (one MI bit) the monitor's moment is */
+#if SC64SS_CARD_DIRECT
+static uint32_t pi_rr_scratch[2] __attribute__((aligned(8))) = {1u, 1u};   /* a resident load's PI re-raise lands here (RR_PI; the blob has no .bss) */
+#endif
 
 struct state_ctx {                        /* offsets mirrored by state.S */
     uint64_t gpr[32];                     /* 0x000: by register number (0, 26, 27 unused) */
@@ -719,6 +818,14 @@ static uint32_t st_pending = 0;      /* STATE_OP_SAVE / STATE_OP_LOAD waiting fo
 static uint32_t st_slot = 0;         /* cart PI address of the slot (0: bound at the moment, card_bind) */
 static uint32_t st_card = 0;         /* the card slot of the pending op */
 static uint32_t st_prefer = 0xFFu;   /* the cart slot a PC's request named by address (0xFF: any) */
+#if SC64SS_CARD_DIRECT
+static uint32_t cd_save_body(uint32_t cause, uint32_t mi);   /* the card-direct bodies (after the card slots) */
+static uint32_t cd_load_body(void);
+#if SC64SS_CARD_DIRECT
+static void cd_load_hide(uint32_t ds, uint32_t dl);   /* the display off the buffer the load's last pass fills */
+#endif
+static void borrow_diag_words(uint32_t place);
+#endif
 static uint32_t st_seq = 0;
 static uint32_t st_wait = 0;         /* VI frames spent waiting */
 static uint32_t st_dma_ticks = 0;
@@ -737,6 +844,7 @@ static uint32_t sd_state;
 static uint32_t sd_read_slot(uint32_t slot_base);
 static uint32_t sd_write_begin(uint32_t slot_base);
 static uint32_t sd_write_card2(uint32_t n, uint32_t base, uint32_t head_only);   /* the mirror of a card slot's state (head_only: the header's sectors) */
+static void shot_request(void);                  /* a screenshot at the next clean frame (the button; the card-direct mailbox) */
 static uint32_t card_count(void);
 static uint32_t card_info(uint32_t n, uint32_t *state, uint32_t *date, uint32_t *time);
 static uint32_t card_bind(uint32_t n, uint32_t read, uint32_t prefer);
@@ -770,6 +878,9 @@ static void exit_wait_ms(uint32_t ms);
 static uint32_t vpak_loaded;
 /* overlay (ss_overlay.c, included after the SD mirror) */
 static uint32_t thumb_ready;
+#if SC64SS_CARD_DIRECT
+static uint32_t thumb_buf[THUMB_BYTES / 4u] __attribute__((aligned(16)));   /* (ss_overlay.c; the card-direct save streams it) */
+#endif
 static void thumb_capture(void);
 static void thumb_store(uint32_t slot_base);
 static void ov_stamp_now(uint32_t *date, uint32_t *time);
@@ -779,8 +890,10 @@ static void feedback_show(const char *text);
 static void feedback_reset(uint32_t origin, uint32_t width);
 static uint32_t frame_stash(void);
 static void slot_patch_clean_frame(uint32_t slot_base);
+static uint32_t bufsw_on, bufsw_vo, bufsw_base0;   /* the visit's display switch (defined after the overlay): a save records the buffer the game showed */
 static void ov_disp_range(uint32_t *start, uint32_t *len);
 static void feedback_service(void);
+static void view_decline_notice(void);   /* borrowed mode: a declined FreeCam's message, on the loaded frame for a second */
 #define STATE_OP_MENU   9u
 static uint32_t st_view = 0, st_view_done = 0, st_view_status = 0;   /* a load followed by the frozen-frame viewer, then the load again */
 static uint32_t st_view_live = 0;     /* the live game: a save into a scratch cart slot first, the same after */
@@ -876,13 +989,24 @@ static void state_capture(uint32_t cause, uint32_t mi) {
     h->mi_mask = MI_INTR_MASK & 0x3Fu;
     AI_DG_EV(7, AI_DG_SNAP((AI_LEN << 8) | 0x20u));
     h->reraise_sp = st_hold ? st_hold : ((mi == MI_INTR_SP) ? RR_SP : ((mi == MI_INTR_DP) ? RR_DP : 0u));
+#if SC64SS_CARD_DIRECT
+    if (borrowed_mode() && (borrow_mi & h->mi_mask & MI_INTR_PI)) {   /* the monitor's moment at a transfer's end */
+        h->reraise_sp |= RR_PI | ((borrow_mi & h->mi_mask & MI_INTR_VI) ? RR_VI : 0u);
+    }
+#endif
     h->memsize = *(vu32 *)0x80000318u;
     h->hook_version = HOOK_VERSION;
     for (uint32_t i = 0; i < 14u; i++) {
         h->vi[i] = *(vu32 *)(VI_BASE + 4u * i);
     }
+    if (bufsw_on) h->vi[1] = bufsw_vo;   /* the buffer the game showed, not the one the visit put on screen (the panel drew there: card-direct saves kept the panel's pixels) */
+#if AI_REPLAY
+    h->vi[14] = vi_frz_frozen ? frz_ai0 : ai_moment;   /* v14: the audio FIFO at the moment (AI_REC_*) */
+    h->vi[15] = ai_len_typ;                             /* v14: the game's usual buffer length (0: not measured) */
+#else
     h->vi[14] = 0;
     h->vi[15] = 0;
+#endif
     h->reserved[0] = pi_saved_dram;   /* v7: the game's DMA address registers at the clean moment */
     h->reserved[1] = pi_saved_cart;
     h->reserved[2] = si_saved_dram;
@@ -897,6 +1021,10 @@ static void state_capture(uint32_t cause, uint32_t mi) {
     h->rcp[1] = DPC_END;
     h->rcp[2] = DPC_CURRENT;
     h->rcp[3] = SP_PC_REG;
+#if AI_REPLAY
+    h->rcp[4] = ai_rate_word(ai_rate_bytes, ai_rate_ticks);   /* v15: the AI's rate at the moment (0: not timed) */
+    h->rcp[5] = (((ai_rate_bytes < 4096u) ? ai_rate_bytes : 4095u) << 20) | (ai_rate_ticks & 0xFFFFFu);   /* v15: the timing it came from */
+#endif
     h->hdr_len = STATE_HDR_LEN;       /* v2: the layout travels with the state */
     h->image_off = STATE_IMAGE_OFF;
     h->thumb_off = STATE_THUMB_OFF;
@@ -956,7 +1084,7 @@ static uint32_t st_spmem[1024] __attribute__((aligned(16))) = {0};
 #define rsp_stub_imem_save  (st_spmem + 0x148u)                         /* 40 words at 0x520 */
 #define rsp_stub_dmem_save  (st_spmem + 0x170u)                         /* 32 words at 0x5C0 */
 
-static uint32_t rsp_mem_save(uint32_t cart) {
+static uint32_t CD_UNUSED rsp_mem_save(uint32_t cart) {
     for (uint32_t half = 0; half < 2u; half++) {
         const vu32 *src = (const vu32 *)(0xA4000000u + half * 0x1000u);
         for (uint32_t i = 0; i < 1024u; i++) {
@@ -968,7 +1096,7 @@ static uint32_t rsp_mem_save(uint32_t cart) {
     return 1u;
 }
 
-static uint32_t rsp_mem_load(uint32_t cart) {
+static uint32_t CD_UNUSED rsp_mem_load(uint32_t cart) {
     const vu32 *src = (const vu32 *)(0xA0000000u | ((uint32_t)(uintptr_t)st_spmem & 0x1FFFFFFFu));
     for (uint32_t half = 0; half < 2u; half++) {
         dcache_writeback_all();
@@ -1113,7 +1241,7 @@ static uint32_t rom_is_libdragon(void) {
     return rom_libdragon == 2u;
 }
 
-static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
+static uint32_t CD_UNUSED state_do_save_body(uint32_t cause, uint32_t mi) {
     state_capture(cause, mi);
     dcache_writeback_all();
     uint32_t ilen = st_hdr.image_len;
@@ -1170,7 +1298,11 @@ static uint32_t state_do_save_body(uint32_t cause, uint32_t mi) {
 
 static uint32_t state_do_save(uint32_t cause, uint32_t mi) {
     vpak_tramp_apply(0);          /* the image carries the game's own handler words, never the pak's jump */
+#if SC64SS_CARD_DIRECT
+    uint32_t r = cd_save_body(cause, mi);
+#else
     uint32_t r = state_do_save_body(cause, mi);
+#endif
     vpak_tramp_apply(1u);
     return r;
 }
@@ -1182,7 +1314,11 @@ static uint32_t state_do_save(uint32_t cause, uint32_t mi) {
  * placement would otherwise send every exception the wrong way after a load: the
  * codes silently stopped (a no-codes state loaded with codes on), or the game
  * jumped into junk (the other way round). Keep this boot's words across the copy. */
+#if SC64SS_CARD_DIRECT
+#define BOOT_WORDS_N    (36u + 4u + 37u + 28u + 20u + 28u)   /* the larger of the two layouts (the alt gate is 36 words) */
+#else
 #define BOOT_WORDS_N    (24u + 4u + 37u + 28u + 20u + 28u)
+#endif
 static uint32_t boot_words[BOOT_WORDS_N] = {0};
 /* RAM offset, words: the engine, the 0x180 vector, the reinstall stub or the borrow
  * gate (with the monitor's SIAGE word at 0x3F0 after it), and in borrowed mode the
@@ -1190,6 +1326,16 @@ static uint32_t boot_words[BOOT_WORDS_N] = {0};
  * check (0x190..0x200) */
 static const uint32_t boot_ranges[6][2] = {{0x090u, 24u}, {0x180u, 4u}, {0x360u, 37u},
                                            {0x010u, 28u}, {0x130u, 20u}, {0x190u, 28u}};
+#if SC64SS_CARD_DIRECT
+/* the alternate vector-page layout (cfg spare bit 17; lowpage.S SC64SS_LP_ALT): the gate at 0x200,
+ * the engine and the front at 0x360..0x3EF (SIAGE after them) */
+static const uint32_t boot_ranges_alt[6][2] = {{0x200u, 36u}, {0x180u, 4u}, {0x360u, 37u},
+                                               {0x010u, 28u}, {0x130u, 20u}, {0x190u, 28u}};
+static uint32_t lp_alt_layout = 0;      /* cfg spare bit 17, taken by cd_tables_init (the cfg is declared later) */
+#define BOOT_RANGES (lp_alt_layout ? boot_ranges_alt : boot_ranges)
+#else
+#define BOOT_RANGES boot_ranges
+#endif
 static void boot_words_copy(uint32_t to_ram) {
     uint32_t k = 0;
     /* The engine's watchpoint covers 0x180..0x187, and a store there from inside an
@@ -1205,8 +1351,8 @@ static void boot_words_copy(uint32_t to_ram) {
     uint32_t watch = c0_watchlo();
     c0_set_watchlo(0);
     for (uint32_t r = 0; r < 6u; r++) {
-        vu32 *p = (vu32 *)(0xA0000000u + boot_ranges[r][0]);
-        for (uint32_t i = 0; i < boot_ranges[r][1]; i++, k++) {
+        vu32 *p = (vu32 *)(0xA0000000u + BOOT_RANGES[r][0]);
+        for (uint32_t i = 0; i < BOOT_RANGES[r][1]; i++, k++) {
             if (to_ram) {
                 p[i] = boot_words[k];
             } else {
@@ -1220,7 +1366,7 @@ static void boot_words_copy(uint32_t to_ram) {
 
 /* Reads the slot header and, when it belongs to this ROM, replaces RAM with
  * the image (past that point a failure leaves the game half replaced). */
-static uint32_t state_do_load_body(void) {
+static uint32_t CD_UNUSED state_do_load_body(void) {
     struct state_hdr *h = &st_hdr;
     uint32_t crc1 = 0, crc2 = 0;
     dcache_writeback_all();
@@ -1295,7 +1441,11 @@ static uint32_t state_do_load_body(void) {
 }
 
 static uint32_t state_do_load(void) {
+#if SC64SS_CARD_DIRECT
+    uint32_t r = cd_load_body();
+#else
     uint32_t r = state_do_load_body();
+#endif
     vpak_tramp_apply(1u);         /* the site holds the game's words again (or still ours, if the copy stopped short) */
     return r;
 }
@@ -1312,8 +1462,14 @@ static uint32_t state_do_load(void) {
  * frame (a black frame is zeros too, and the game draws there). 0 = none found. */
 #define AI_ZBLK         0x4000u
 static uint32_t ai_zsrc = 0;         /* the block of the last load (physical; 0 = none) */
+#if AI_REPLAY
+/* *need bytes of zeros: rounded up to blocks, reduced to the longest run when none is that long */
+static uint32_t ai_silence_find(uint32_t *need) {
+    uint32_t b, k, best = 0, best_end = 0, run = 0, n;
+#else
 static uint32_t ai_silence_find(void) {
     uint32_t b, k, best = 0, best_end = 0, run = 0;
+#endif
     uint32_t fb = st_hdr.vi[1] & 0x00FFFFFFu;   /* the displayed frame: the buffers around it are drawn into */
     for (b = 0x00010000u; b < 0x007D0000u; b += AI_ZBLK) {
         uint32_t z = 0;
@@ -1324,10 +1480,20 @@ static uint32_t ai_silence_find(void) {
         if (run > best) { best = run; best_end = b + AI_ZBLK; }
     }
     if (!best) return 0;
+#if AI_REPLAY
+    n = (*need + AI_ZBLK - 1u) / AI_ZBLK;
+    if (!n) n = 1u;
+    if (n > best) { n = best; *need = n * AI_ZBLK; }
+    b = best_end - ((best + n) / 2u) * AI_ZBLK;
+    for (k = 0; k < n * AI_ZBLK; k += 4u) {
+        if (*(vu32 *)(0xA0000000u + b + k)) return 0;
+    }
+#else
     b = best_end - ((best + 1u) / 2u) * AI_ZBLK;
     for (k = 0; k < AI_ZBLK; k += 4u) {
         if (*(vu32 *)(0xA0000000u + b + k)) return 0;
     }
+#endif
     return b;
 }
 
@@ -1361,9 +1527,15 @@ static void state_finish_load(void) {
     uint32_t rr = h->reraise_sp;
     uint32_t sp_raise = (rr & RR_SP) != 0u;
     uint32_t dp_raise = (rr & RR_DP) != 0u;
+#if SC64SS_CARD_DIRECT
+    if ((rr != 0u) && !(rr & (RR_HOLD | RR_VI))) {
+        VI_CURRENT = 0;               /* an SP/DP moment, or a transfer's end without the VI: no VI event belongs to it */
+    }
+#else
     if ((rr != 0u) && !(rr & RR_HOLD)) {
         VI_CURRENT = 0;               /* an SP/DP moment: no VI event belongs to it */
     }
+#endif
     /* a VI moment keeps the VI interrupt pending (nothing cleared it during the
      * freeze, and vi_frz_end ends at the next one): the restored VI manager runs
      * at once and aims the field, instead of a field later with stale timing */
@@ -1378,6 +1550,21 @@ static void state_finish_load(void) {
         DPC_START = (uint32_t)(uintptr_t)st_sync_cmd & 0x1FFFFFFFu;
         DPC_END = ((uint32_t)(uintptr_t)st_sync_cmd & 0x1FFFFFFFu) + 8u;
     }
+#if SC64SS_CARD_DIRECT
+    if ((rr & RR_PI) && !borrowed_mode()) {
+        /* a state taken at a cartridge transfer's end, loaded with the hook resident: every
+         * transfer of ours cleared the line (just above as well); a one-byte transfer from the
+         * ROM's first byte into a scratch of ours ends with it up again, left so, and the game's
+         * handler takes it (borrowed: the monitor's load epilogue, mon_pi_owed_exit). The
+         * world's address registers go back below. */
+        uint32_t t1 = c0_count();
+        PI_DRAM_ADDR = (uint32_t)(uintptr_t)pi_rr_scratch & 0x1FFFFFFFu;
+        PI_CART_ADDR = 0x10000000u;
+        PI_WR_LEN = 0;
+        while ((PI_STATUS & 3u) && ((c0_count() - t1) < 46875u * 2u)) {
+        }
+    }
+#endif
     pif_poll_block_send();            /* the PIF holds this boot's last command, not the loaded world's */
     if (h->hook_version >= 7u) {
         /* the restored world may be between writing its DMA address and its length */
@@ -1560,15 +1747,67 @@ static void state_finish_load(void) {
      * finds the AI busy at its first check whenever that comes. In borrowed mode the
      * region copy-back would eat most of it, so the monitor's load epilogue queues
      * it once the region is back (borrow_load_exit hands the block over). With no
-     * block of zeros, 8 bytes of the hook's own, for the interrupt at least. */
-    if (!(AI_STATUS & 0xC0000000u)) {
-        const uint32_t kick = 4u;
-        ai_zsrc = (kick >= 4u) ? ai_silence_find() : 0u;
+     * block of zeros, 8 bytes of the hook's own, for the interrupt at least.
+     * Behind a DMA still playing as well (the AI queues a second): Pokemon Stadium 2's battle
+     * demo streams buffers of a hundred kilobytes and more, and one of them was still going at
+     * this check after a three-second load, ended during the epilogue's copy-back, and the game
+     * resumed to an idle AI with nothing queued and its driver in the gap loop (measured with the
+     * monitor's probe: idle at every tick). Only a full AI (two queued) takes nothing. */
+#if AI_REPLAY
+    /* v15: the AI's rate as the moment had it. AI_DACRATE is write-only and a game sets it per
+     * scene: a load over a scene at another rate kept that rate (Pokemon Stadium 2: a battle state
+     * loaded over its menu's 32 kHz, the battle music fast, with a gap at every frame). Written as
+     * osAiSetFrequency writes it, with the bit rate; the silence below plays at it */
+    if ((h->hook_version >= 15u) && ((h->rcp[4] >> 16) == 0x4152u)) {
+        uint32_t r = h->rcp[4] & 0xFFFFu;
+        uint32_t b = (r + 1u) / 66u;
+        if (b > 16u) b = 16u;
+        if (b) {
+            *(vu32 *)0xA4500010u = r;                   /* AI_DACRATE */
+            *(vu32 *)0xA4500014u = b - 1u;              /* AI_BITRATE */
+        }
+    }
+#endif
+    if (borrowed_mode() || !(AI_STATUS & 0x80000000u)) {   /* borrowed: the epilogue decides, after the copy-back */
+        const uint32_t kick = (AI_REPLAY && (h->vi[14] & AI_REC_VALID)) ? 7u : 4u;
+#if AI_REPLAY
+        uint32_t need = AI_ZBLK;
+        ai_len1 = AI_ZBLK;
+        ai_len2 = (kick == 5u) ? AI_ZBLK : 0u;
+        if ((kick == 7u) && (h->vi[14] & AI_REC_BUSY)) {
+            /* the moment's FIFO as silence: the remaining bytes of the DMA that was playing, then,
+             * when a second was queued behind it, one of the game's usual length (a block when that
+             * is not known: the borrowed placements have no tick to measure it). An idle moment has
+             * nothing to replay but still gets the block, or the 8 bytes below, as before the replay:
+             * the load cleared the AI's interrupt, and a driver that refills on it waited for good
+             * (Resident Evil 2: silent after such a load, its next room change hung on the sound) */
+            uint32_t rec = h->vi[14];
+            ai_len1 = ((rec & 0x3FFFFu) + 7u) & ~7u;
+            if (!ai_len1) ai_len1 = 8u;
+            ai_len2 = (rec & AI_REC_FULL) ? (h->vi[15] ? ((h->vi[15] + 7u) & ~7u) : AI_ZBLK) : 0u;
+            need = (ai_len1 > ai_len2) ? ai_len1 : ai_len2;
+        }
+        ai_zsrc = ((kick == 4u) || (kick == 5u) || (kick == 7u)) ? ai_silence_find(&need) : 0u;
+        if (ai_len1 > need) ai_len1 = need;
+        if (ai_len2 > need) ai_len2 = need;
+#else
+        ai_zsrc = ((kick == 4u) || (kick == 5u)) ? ai_silence_find() : 0u;
+#endif
         AI_DG_EV(6, ai_zsrc | kick);
         if (ai_zsrc && !borrowed_mode()) {
+#if AI_REPLAY
+            AI_DRAM_ADDR = ai_zsrc;
+            AI_LEN = ai_len1;
+            if (ai_len2 && !(AI_STATUS & 0x80000000u)) {   /* a second behind it, as the moment had */
+                AI_DRAM_ADDR = ai_zsrc;
+                AI_LEN = ai_len2;
+            }
+        } else if (!ai_zsrc && !(AI_STATUS & 0x80000000u)) {   /* no block of zeros (Resident Evil 2's RAM has none): 8 bytes, for the interrupt */
+#else
             AI_DRAM_ADDR = ai_zsrc;
             AI_LEN = AI_ZBLK;
-        } else if (!ai_zsrc) {
+        } else if (!ai_zsrc && !(AI_STATUS & 0x80000000u)) {
+#endif
             __asm__ volatile("cache 0x19, 0(%0)" : : "r"(st_ai_silence) : "memory");   /* Hit_Writeback_D */
             AI_DRAM_ADDR = (uint32_t)(uintptr_t)st_ai_silence & 0x1FFFFFFFu;
             AI_LEN = 8u;
@@ -1618,10 +1857,12 @@ static void state_resume_flag_clear(void) {
     st_hdr.checksum = 0;
     st_hdr.checksum = hdr_checksum(&st_hdr);
     dcache_writeback_all();
+#if !SC64SS_CARD_DIRECT
     if (rom_write_set(1u)) {
         pi_dma((uint32_t)(uintptr_t)&st_hdr, st_slot + STATE_HDR_OFF, STATE_HDR_LEN, 1u);
         rom_write_set(0);
     }
+#endif
     sd_write_card2(st_card, st_slot, 1u);
     crumb(18u, st_slot, sd_state);
 }
@@ -1842,7 +2083,16 @@ static void state_service(uint32_t cause) {
      * lose */
     uint32_t mi = (borrowed_mode() ? borrow_mi : MI_INTERRUPT) & MI_INTR_MASK & 0x3Fu;
     ST_DBG(st_dbg[9] = mi;)
+#if SC64SS_CARD_DIRECT
+    /* the card-direct monitor also takes a cartridge transfer's end, alone or with the VI (streamed
+     * scenes keep the PI busy at most frame boundaries, monitor.S mt_why); its exits raise that line
+     * again (mon_pi_owed_exit) and a state records it (RR_PI): with the VI the moment is the VI's,
+     * alone it is a mid-frame one, as an RSP or RDP moment */
+    if (borrowed_mode() && (mi == (MI_INTR_VI | MI_INTR_PI))) mi = MI_INTR_VI;
+    if ((mi != MI_INTR_VI) && (mi != MI_INTR_SP) && (mi != MI_INTR_DP) && !(borrowed_mode() && (mi == MI_INTR_PI))) {
+#else
     if ((mi != MI_INTR_VI) && (mi != MI_INTR_SP) && (mi != MI_INTR_DP)) {
+#endif
         ST_DBG(st_dbg[3]++;)
         return;
     }
@@ -2008,6 +2258,9 @@ load_path:
     state_finish_load();
     crumb(11u, st_hdr.ctx.epc, st_hdr.ctx.status);
     feedback_show((st_view_done && (st_view_status != ST_OK)) ? "NO FRAME TO FLY" : "STATE LOADED");   /* a declined FreeCam says so: the state is loaded all the same */
+    if (borrowed_mode() && st_view_done && (st_view_status != ST_OK)) {
+        view_decline_notice();    /* no tick of ours follows this visit to carry the message: on the frame now, a second long */
+    }
     state_done(ST_OK);            /* the reply goes out before the world changes */
     TR_STAGE = 7;
     reentry = 0;
@@ -2384,6 +2637,14 @@ struct sd_run {
 static struct sd_run sd_runs[SD_RUNS_MAX] = {{0, 0, 0}};
 static uint32_t sd_run_n = 0;
 static uint32_t sd_total = 0;              /* file sectors the table covers */
+#if SC64SS_CARD_DIRECT
+static uint32_t cd_xfer(uint32_t fs, uint32_t ram, uint32_t n, uint32_t write);
+static uint32_t cd_begin(uint32_t n, uint32_t scratch);
+static uint32_t cd_write_header(void);
+static uint32_t cd_index[1024] __attribute__((aligned(16)));
+static uint32_t cd_shot_hdr[1024] __attribute__((aligned(16)));
+static uint32_t cd_thumb_slot;
+#endif
 /* a mirror writes a list of file segments in order (each a contiguous slot range) */
 struct sd_seg {
     uint32_t file_sector;
@@ -2616,6 +2877,7 @@ static void sd_issue_chunk(void) {
 
 /* Start mirroring a cart slot's state to card slot n's file (after a save, or on
  * request); head_only: the header's sectors alone (the resume mark). */
+#if !SC64SS_CARD_DIRECT
 static uint32_t sd_write_card2(uint32_t n, uint32_t base, uint32_t head_only) {
     uint32_t image_off = 0, image_len = 0, map = card_map_pi(n);
     if (!map) return 0;                                   /* no file for this card slot */
@@ -2681,8 +2943,18 @@ static uint32_t sd_write_card2(uint32_t n, uint32_t base, uint32_t head_only) {
     return (sd_state == 1) ? 1u : 0u;
 }
 
+#else
+/* card-direct: a save wrote its file itself; the resume mark rewrites the header's sectors */
+static uint32_t sd_write_card2(uint32_t n, uint32_t base, uint32_t head_only) {
+    (void) base;
+    if (!head_only) return 1u;
+    if (!cd_begin(n, 0)) return 0;
+    return cd_write_header();
+}
+#endif
+
 /* by cart address: the card slot it holds (the dev mailbox; a mirror that waited for the pak's) */
-static uint32_t sd_write_begin(uint32_t slot_base) {
+static uint32_t CD_UNUSED sd_write_begin(uint32_t slot_base) {
     uint32_t n = card_of_base(slot_base);
     return (n == SLX_NONE) ? 0 : sd_write_card2(n, slot_base, 0);
 }
@@ -2713,6 +2985,40 @@ static uint32_t shot_room(void) {
  * entry (the copy on the cart is brought up to date first; a write that fails before the
  * header leaves the file's count as it was). Behind a state's mirror in flight it waits
  * its turn (the stash is not reused until it is done). */
+#if SC64SS_CARD_DIRECT
+/* card-direct: the PNG is in the file already (shot_capture streamed it at the fill point);
+ * the header block gets the entry, the count and the new fill point, and goes to the file's
+ * first sectors, sector 0 last */
+static void shot_write_failed(void);
+static uint32_t sd_write_begin_shot(uint32_t len) {
+    uint32_t sectors = (len + 511u) / 512u, i = hook_cfg.shot_count;
+    if (!hook_cfg.shot_sectors || !len || (i >= SHOT_ENTRIES_MAX) ||
+        ((hook_cfg.shot_fill + sectors) > hook_cfg.shot_sectors)) return 0;
+    shot_fill0 = hook_cfg.shot_fill;
+    shot_count0 = i;
+    cd_shot_hdr[8u + 2u * i] = hook_cfg.shot_fill;
+    cd_shot_hdr[9u + 2u * i] = len;
+    cd_shot_hdr[3] = i + 1u;
+    cd_shot_hdr[5] = hook_cfg.shot_fill + sectors;
+    dcache_writeback_all();
+    if (!cd_xfer(1u, (uint32_t)(uintptr_t)cd_shot_hdr + 512u, SHOT_HDR_SECTORS - 1u, 1u) ||
+        !cd_xfer(0, (uint32_t)(uintptr_t)cd_shot_hdr, 1u, 1u)) {
+        shot_write_failed();
+        return 0;
+    }
+    hook_cfg.shot_fill += sectors;
+    hook_cfg.shot_count = i + 1u;
+    sd_writes_done++;
+    return 1u;
+}
+
+static void shot_write_failed(void) {
+    cd_shot_hdr[3] = shot_count0;
+    cd_shot_hdr[5] = shot_fill0;
+    hook_cfg.shot_fill = shot_fill0;
+    hook_cfg.shot_count = shot_count0;
+}
+#else
 static uint32_t sd_write_begin_shot(uint32_t len) {
     uint32_t sectors = (len + 511u) / 512u;
     if (!hook_cfg.shot_sectors || !len || (hook_cfg.shot_count >= SHOT_ENTRIES_MAX) ||
@@ -2774,6 +3080,7 @@ static void shot_write_failed(void) {
         rom_write_set(0);
     }
 }
+#endif
 
 
 /* Every VI tick: collect the in-flight write, start the next chunk. */
@@ -2864,7 +3171,7 @@ static uint32_t sd_read_range(uint32_t base, uint32_t from, uint32_t to) {
 /* Read card slot n's file into the cart slot at base (synchronous, the game is frozen
  * meanwhile): sectors 1.. first and the header's sector last, so a cut read leaves no
  * valid header over a partial image. 0 when the file holds no state of this ROM. */
-static uint32_t sd_read_card(uint32_t n, uint32_t base) {
+static uint32_t CD_UNUSED sd_read_card(uint32_t n, uint32_t base) {
     uint32_t w0 = 0, ver = 0, image_len = 0, image_off = 0, h1 = 0, h2 = 0, crc1 = 0, crc2 = 0, map = card_map_pi(n);
     if (!map || (sd_state == 1u)) return 0;
     crumb(9u, base, n);
@@ -2909,17 +3216,25 @@ static uint32_t sd_read_card(uint32_t n, uint32_t base) {
 }
 
 /* by cart address (the dev mailbox; the load's fallback) */
-static uint32_t sd_read_slot(uint32_t slot_base) {
+static uint32_t CD_UNUSED sd_read_slot(uint32_t slot_base) {
     uint32_t n = card_of_base(slot_base);
     return (n == SLX_NONE) ? 0 : sd_read_card(n, slot_base);
 }
 
 /* a file's head (the header and the thumbnail) into the scratch region, for the panel */
+#if SC64SS_CARD_DIRECT
+static uint32_t sd_read_head(uint32_t n) {    /* card-direct: the panel's thumb_draw reads the file itself */
+    if (!cd_begin(n, 0)) return 0;
+    cd_thumb_slot = n;
+    return 1u;
+}
+#else
 static uint32_t sd_read_head(uint32_t n) {
     uint32_t map = card_map_pi(n);
     if (!map || (sd_state == 1u) || !sd_ensure_init() || !sd_load_runs_at(map)) return 0;
     return sd_read_range(SLOT_SCRATCH_PI, 0, STATE_IMAGE_OFF / 512u);
 }
+#endif
 
 
 /* ---- Card slots ---------------------------------------------------------------
@@ -2927,12 +3242,27 @@ static uint32_t sd_read_head(uint32_t n) {
  * The hook keeps the index: a save fills an entry, a delete clears one, and the cart
  * table says which card slot each cart slot holds (the cache), least recently used
  * first out. Every write is a PIO store with the cart writable around it. */
+#if SC64SS_CARD_DIRECT
+/* card-direct: the index is a RAM copy of the one the menu built (cd_tables_init); the files
+ * are the truth and the menu rebuilds it from them at every launch */
+static uint32_t slx_rd(uint32_t off, uint32_t *v) {
+    if (off >= sizeof(cd_index)) return 0;
+    *v = cd_index[off / 4u];
+    return 1u;
+}
+static uint32_t slx_wr(uint32_t off, uint32_t v) {
+    if (off >= sizeof(cd_index)) return 0;
+    cd_index[off / 4u] = v;
+    return 1u;
+}
+#else
 static uint32_t slx_rd(uint32_t off, uint32_t *v) {
     return pio_read(0xA0000000u | (SLOT_INDEX_PI + off), v);
 }
 static uint32_t slx_wr(uint32_t off, uint32_t v) {
     return pio_write(0xA0000000u | (SLOT_INDEX_PI + off), v);
 }
+#endif
 
 /* card slots the index lists (0: no index) */
 static uint32_t card_count(void) {
@@ -2955,15 +3285,20 @@ static uint32_t card_info(uint32_t n, uint32_t *state, uint32_t *date, uint32_t 
     return 1;
 }
 
-/* the cart address of a card slot's sector map (0 = none) */
+/* the cart address of a card slot's sector map (0 = none); card-direct: the maps are in flash */
+#if SC64SS_CARD_DIRECT
+#define MAPS_PI_CUR CD_MAPS_PI
+#else
+#define MAPS_PI_CUR SLOT_MAPS_PI
+#endif
 static uint32_t card_map_pi(uint32_t n) {
     uint32_t magic = 0, m = 0, off = 0;
-    if (!pio_read(0xA0000000u | SLOT_MAPS_PI, &magic) || (magic != SLM_MAGIC) ||
-        !pio_read(0xA0000000u | (SLOT_MAPS_PI + 4u), &m) || (n >= m) ||
-        !pio_read(0xA0000000u | (SLOT_MAPS_PI + 8u + 4u * n), &off) || (off == 0) || (off >= SLOT_MAPS_LEN)) {
+    if (!pio_read(0xA0000000u | MAPS_PI_CUR, &magic) || (magic != SLM_MAGIC) ||
+        !pio_read(0xA0000000u | (MAPS_PI_CUR + 4u), &m) || (n >= m) ||
+        !pio_read(0xA0000000u | (MAPS_PI_CUR + 8u + 4u * n), &off) || (off == 0) || (off >= SLOT_MAPS_LEN)) {
         return 0;
     }
-    return SLOT_MAPS_PI + off;
+    return MAPS_PI_CUR + off;
 }
 
 /* the card slot a cart slot holds (SLX_NONE: free) */
@@ -3011,6 +3346,18 @@ static void card_set(uint32_t n, uint32_t flags, uint32_t date, uint32_t time, u
  * any). The evicted card slot forgets its cart slot and the cart slot's header magic is
  * zeroed first, so a save or read that stops short leaves no other state's header over
  * a partial image. With `read` the file is read in. 0 when none can be had. */
+#if SC64SS_CARD_DIRECT
+/* card-direct: no cart slot to bind; the card slot must exist (and hold a state, for a load),
+ * and the bodies stream by st_card. The token stands in for the cart address. */
+static uint32_t card_bind(uint32_t n, uint32_t read, uint32_t prefer) {
+    uint32_t st = 0;
+    (void) prefer;
+    if (!card_info(n, &st, 0, 0)) return 0;
+    if (read && !(st & 0xFFu)) return 0;
+    if (!card_map_pi(n)) return 0;
+    return CD_TOKEN;
+}
+#else
 static uint32_t card_bind(uint32_t n, uint32_t read, uint32_t prefer) {
     uint32_t st = 0, lru = 0, k = hook_cfg.slots_n, p = CFG_SLOTS_MAX, best = SLX_NONE;
     if (!card_info(n, &st, 0, 0)) return 0;
@@ -3076,9 +3423,31 @@ static uint32_t card_bind(uint32_t n, uint32_t read, uint32_t prefer) {
     }
     return base;
 }
+#endif
 
 /* Delete card slot n: the fresh marker over its file's first sector (written out here,
  * the game frozen), the index entry cleared, its cart slot freed. */
+#if SC64SS_CARD_DIRECT
+/* card-direct: the fresh marker over the file's first sector through the window, the RAM entry cleared */
+static uint32_t card_delete(uint32_t n) {
+    uint32_t st = 0, crc1 = 0, crc2 = 0;
+    if (!card_info(n, &st, 0, 0) || !cd_begin(n, 0)) return 0;
+    pio_read(0xB0000010u, &crc1);
+    pio_read(0xB0000014u, &crc2);
+    for (uint32_t i = 0; i < 128u; i++) bounce[i] = 0;
+    bounce[0] = SD_MAGIC_FREE;
+    bounce[1] = crc1;
+    bounce[2] = crc2;
+    bounce[3] = n;
+    dcache_writeback_all();
+    if (!cd_xfer(0, (uint32_t)(uintptr_t)bounce, 1u, 1u)) return 0;
+    slx_wr(SLX_CARD + 12u * n, 0);
+    slx_wr(SLX_CARD + 12u * n + 4u, 0);
+    slx_wr(SLX_CARD + 12u * n + 8u, 0);
+    crumb(20u, n, 0);
+    return 1u;
+}
+#else
 static uint32_t card_delete(uint32_t n) {
     uint32_t st = 0, crc1 = 0, crc2 = 0, map = card_map_pi(n);
     if (!map || (sd_state == 1u) || !card_info(n, &st, 0, 0)) return 0;
@@ -3125,6 +3494,294 @@ static uint32_t card_delete(uint32_t n) {
     crumb(20u, n, sd_state);
     return (sd_state == 0) ? 1u : 0u;
 }
+#endif
+
+#if SC64SS_CARD_DIRECT
+/* ---- Card-direct mode: the streaming primitives ------------------------------------------
+ * A transfer moves whole sectors between RAM (any 8-byte aligned address the PI can DMA) and
+ * the file whose runs are loaded, through the window in the data buffer, at most
+ * CD_WIN_SECTORS a command and never across a run boundary. The cart advances its sector by
+ * the count after every transfer, so SD_SECTOR_SET goes out only when the position changes.
+ * The RAM buffer's cache lines must be written back (a write) or invalidated (a read) by the
+ * caller: dcache_writeback_all does both. */
+static uint32_t cd_index[1024] __attribute__((aligned(16))) = {0};
+static uint32_t cd_shot_hdr[1024] __attribute__((aligned(16))) = {0};
+static uint32_t cd_thumb_slot = 0;
+static uint32_t cd_inited = 0;
+static uint32_t cd_next_sec = 0;        /* the card's position after the last transfer (0: not known) */
+static uint32_t cd_xfers = 0;           /* diagnostics: transfers done */
+static uint32_t cd_stash_sec = 0;       /* card-borrowed: the stash file's first sector (the flash tables) */
+static uint32_t cd_image_xfer = 0;      /* card-borrowed: the transfer in progress is the image's (the region under the
+                                         * hook then comes from / goes to the stash file); the hook's own buffers live
+                                         * in that region too and must never take that route */
+
+static uint32_t cd_xfer(uint32_t fs, uint32_t ram, uint32_t n, uint32_t write) {
+    while (n) {
+        uint32_t r = sd_run_of(fs);
+        if (r >= SD_RUNS_MAX) {
+            sd_last_error = 0xEEEB0000u | (fs & 0xFFFFu);
+            cd_next_sec = 0;
+            return 0;
+        }
+        uint32_t k = sd_runs[r].file_sector + sd_runs[r].count - fs;
+        if (k > n) k = n;
+        if (k > CD_WIN_SECTORS) k = CD_WIN_SECTORS;
+        uint32_t sec = sd_runs[r].sector + (fs - sd_runs[r].file_sector);
+        uint32_t phys = ram & 0x1FFFFFFFu;
+        if (borrowed_mode() && cd_image_xfer && (phys < 0x00800000u)) {
+            /* card-borrowed: the region under the hook is in the stash file for this visit, so
+             * its bytes go between the two files through the window, no RAM involved; a chunk
+             * stops at the region's edges */
+            if ((phys < 0x007D0000u) && ((phys + k * 512u) > 0x007D0000u)) k = (0x007D0000u - phys) / 512u;
+            if ((phys < 0x007F0000u) && (phys >= 0x007D0000u) && ((phys + k * 512u) > 0x007F0000u)) k = (0x007F0000u - phys) / 512u;
+            if ((phys >= 0x007D0000u) && (phys < 0x007F0000u)) {
+                uint32_t ss = cd_stash_sec + (phys - 0x007D0000u) / 512u;
+                if (!cd_stash_sec) { sd_last_error = 0xEEEA0000u; cd_next_sec = 0; return 0; }
+                if (write) {                          /* the stash's sectors -> the window -> the file's */
+                    if (!sc64_command_long(SC64_CMD_SD_SECTOR_SET, ss, 0, CMD_TIMEOUT_TICKS) ||
+                        !sc64_command_long(SC64_CMD_SD_READ, CD_WIN_PI, k, SD_XFER_TIMEOUT_TICKS) ||
+                        !sc64_command_long(SC64_CMD_SD_SECTOR_SET, sec, 0, CMD_TIMEOUT_TICKS) ||
+                        !sc64_command_long(SC64_CMD_SD_WRITE, CD_WIN_PI, k, SD_XFER_TIMEOUT_TICKS)) { cd_next_sec = 0; return 0; }
+                } else {                              /* the file's sectors -> the window -> the stash's */
+                    if (!sc64_command_long(SC64_CMD_SD_SECTOR_SET, sec, 0, CMD_TIMEOUT_TICKS) ||
+                        !sc64_command_long(SC64_CMD_SD_READ, CD_WIN_PI, k, SD_XFER_TIMEOUT_TICKS) ||
+                        !sc64_command_long(SC64_CMD_SD_SECTOR_SET, ss, 0, CMD_TIMEOUT_TICKS) ||
+                        !sc64_command_long(SC64_CMD_SD_WRITE, CD_WIN_PI, k, SD_XFER_TIMEOUT_TICKS)) { cd_next_sec = 0; return 0; }
+                }
+                cd_next_sec = 0;
+                cd_xfers++;
+                fs += k;
+                ram += k * 512u;
+                n -= k;
+                continue;
+            }
+        }
+        if ((sec != cd_next_sec) && !sc64_command_long(SC64_CMD_SD_SECTOR_SET, sec, 0, CMD_TIMEOUT_TICKS)) {
+            cd_next_sec = 0;
+            return 0;
+        }
+        cd_next_sec = 0;
+        if (write) {
+            if (!pi_dma(ram, CD_WIN_PI, k * 512u, 1u)) return 0;
+            if (!sc64_command_long(SC64_CMD_SD_WRITE, CD_WIN_PI, k, SD_XFER_TIMEOUT_TICKS)) return 0;
+        } else {
+            if (!sc64_command_long(SC64_CMD_SD_READ, CD_WIN_PI, k, SD_XFER_TIMEOUT_TICKS)) return 0;
+            if (!pi_dma(ram, CD_WIN_PI, k * 512u, 0)) return 0;
+        }
+        cd_next_sec = sec + k;
+        cd_xfers++;
+        fs += k;
+        ram += k * 512u;
+        n -= k;
+    }
+    return 1u;
+}
+
+/* the file of card slot n (or the scratch file): its runs loaded, its first sector checked
+ * (a state of this ROM, or the fresh marker for it) */
+static uint32_t cd_begin(uint32_t n, uint32_t scratch) {
+    uint32_t map = scratch ? CD_SCRATCH_TABLE_PI : card_map_pi(n);
+    cd_next_sec = 0;
+    if (!map || !sd_ensure_init() || !sd_load_runs_at(map)) return 0;
+    if (!sd_verify_card(scratch ? CD_SCRATCH_N : n)) return 0;
+    cd_next_sec = 0;                    /* (the header sector read moved the card's position) */
+    return 1u;
+}
+
+/* st_hdr over the file's first 4 KiB: sectors 1..7, then 0 (its checksum computed by the caller) */
+static uint32_t cd_write_header(void) {
+    dcache_writeback_all();
+    return cd_xfer(1u, (uint32_t)(uintptr_t)&st_hdr + 512u, STATE_HDR_LEN / 512u - 1u, 1u) &&
+           cd_xfer(0, (uint32_t)(uintptr_t)&st_hdr, 1u, 1u);
+}
+
+/* the index and the screenshot header from their flash copies, once; the cfg's mirror for the PC.
+ * Card-borrowed: every visit starts from a fresh copy of the blob, so the cfg comes from the
+ * mirror (the truth between visits), the index is rebuilt from the files' first sectors and the
+ * screenshot header read from its file, and the stash file's sector from the flash tables. */
+static void cd_tables_init(void) {
+    lp_alt_layout = (hook_cfg.spare >> 17) & 1u;   /* the alternate vector-page layout: the boot's words live elsewhere */
+    if (cd_inited) return;
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t v = 0;
+        if (!pio_read(0xA0000000u | (CD_INDEX_PI + 4u * i), &v)) return;
+        cd_index[i] = v;
+    }
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t v = 0;
+        if (!pio_read(0xA0000000u | (CD_SHOT_HDR_PI + 4u * i), &v)) return;
+        cd_shot_hdr[i] = v;
+    }
+    if (borrowed_mode()) {
+        uint32_t *cw = (uint32_t *)&hook_cfg, magic = 0;
+        if (pio_read(CD_CFG_MIRROR, &magic) && (magic == CFG_MAGIC)) {
+            for (uint32_t i = 1u; i < CFG_WORDS; i++) {
+                pio_read(CD_CFG_MIRROR + 4u * i, &cw[i]);
+            }
+        }
+        pio_read(0xA0000000u | (CD_STASH_INFO_PI + 4u), &cd_stash_sec);
+        if (sd_ensure_init()) {
+            uint32_t n = card_count();
+            for (uint32_t k = 0; k < n; k++) {
+                uint32_t map = card_map_pi(k), w0 = 0, fl = 0, il = 0, d = 0, t = 0;
+                if (!map || !sd_load_runs_at(map) || !sd_read_header_sector()) continue;
+                pio_read(SD_BRAM_SECTOR + 0x00, &w0);
+                if (w0 != STATE_MAGIC) {
+                    cd_index[32u + 3u * k] = 0;
+                    continue;
+                }
+                pio_read(SD_BRAM_SECTOR + 0x08, &fl);
+                pio_read(SD_BRAM_SECTOR + 0x0C, &il);
+                pio_read(SD_BRAM_SECTOR + 0x1C, &d);
+                pio_read(SD_BRAM_SECTOR + 0x44, &t);
+                cd_index[32u + 3u * k] = (fl & 0xFFu) | ((il < STATE_IMAGE_LEN_B) ? SLX_RESIDENT : 0u);
+                cd_index[33u + 3u * k] = d;
+                cd_index[34u + 3u * k] = t;
+            }
+            if (hook_cfg.shot_sectors && sd_load_runs_at(CD_SHOT_TABLE_PI)) {
+                cd_next_sec = 0;
+                dcache_writeback_all();
+                cd_xfer(0, (uint32_t)(uintptr_t)cd_shot_hdr, SHOT_HDR_SECTORS, 0);
+            }
+            cd_next_sec = 0;
+        }
+    } else {
+        const uint32_t *cw = (const uint32_t *)&hook_cfg;
+        for (uint32_t i = 0; i < CFG_WORDS; i++) {
+            pio_write(CD_CFG_MIRROR + 4u * i, cw[i]);
+        }
+    }
+    cd_inited = 1u;
+}
+
+/* card-direct: the state straight to its file on the card (card slot st_card, or the scratch
+ * file for the live FreeCam), through the window, the game frozen throughout. The file's
+ * layout is the one every build writes: the zeroed sector over the header first (a cut write
+ * leaves no valid state), the image, the RSP's memories, the thumbnail and the zeros of the
+ * head, the header's sectors 1..7, then sector 0 last. */
+static uint32_t cd_save_body(uint32_t cause, uint32_t mi) {
+    uint32_t scratch = st_view_live;
+    state_capture(cause, mi);
+    if (borrowed_mode()) borrow_diag_words(1u);   /* the game's words under entry.S's stage marks, for the image */
+    dcache_writeback_all();
+    uint32_t ilen = st_hdr.image_len, roff = STATE_IMAGE_OFF + ilen;
+    if (!cd_begin(st_card, scratch)) return ST_SD_FAIL;
+    if (((roff + STATE_RSP_LEN) / 512u) > sd_total) {
+        sd_last_error = 0xCCCD0000u | (((roff + STATE_RSP_LEN) / 512u) & 0xFFFFu);   /* the file is too small for this state */
+        return ST_SD_FAIL;
+    }
+    st_hdr.rsp_gpr[0] = 0;
+    if (rom_is_libdragon() && rsp_regs_save(st_hdr.rsp_gpr)) {
+        st_hdr.rsp_gpr[0] = RSP_GPR_MAGIC;
+    }
+    st_hdr.regions[0].kind = REGION_RSP;
+    st_hdr.regions[0].off = roff;
+    st_hdr.regions[0].len = STATE_RSP_LEN;
+    st_hdr.regions[0].arg = rsp_loop_pc ? rsp_loop_pc : SP_PC_REG;
+    st_hdr.regions_n = 1u;
+    st_hdr.card_slot = scratch ? 0 : (st_card + 1u);
+    /* 1. a zeroed sector over the file's header */
+    for (uint32_t i = 0; i < sizeof(bounce) / 4u; i++) {
+        ((vu32 *)bounce)[i] = 0;
+    }
+    dcache_writeback_all();
+    if (!cd_xfer(0, (uint32_t)(uintptr_t)bounce, 1u, 1u)) return ST_SD_FAIL;
+    /* 2. the image, from RAM (card-borrowed: the region under the hook from the stash file) */
+    cd_image_xfer = 1u;
+    if (!cd_xfer(STATE_IMAGE_OFF / 512u, STATE_IMAGE_BASE, ilen / 512u, 1u)) { cd_image_xfer = 0; return ST_SD_FAIL; }
+    cd_image_xfer = 0;
+    /* 3. the RSP's memories (DMEM, then IMEM) through the RSP buffer */
+    for (uint32_t half = 0; half < 2u; half++) {
+        const vu32 *src = (const vu32 *)(0xA4000000u + half * 0x1000u);
+        for (uint32_t i = 0; i < 1024u; i++) {
+            st_spmem[i] = src[i];
+        }
+        dcache_writeback_all();
+        if (!cd_xfer(roff / 512u + half * 8u, (uint32_t)(uintptr_t)st_spmem, 8u, 1u)) return ST_SD_FAIL;
+    }
+    /* 4. the head's sectors 8..31: the thumbnail (19 sectors), then zeros to the image */
+    if (thumb_ready) {
+        dcache_writeback_all();
+        if (!cd_xfer(STATE_THUMB_OFF / 512u, (uint32_t)(uintptr_t)thumb_buf, (THUMB_BYTES + 511u) / 512u, 1u)) return ST_SD_FAIL;
+        if (!cd_xfer(STATE_THUMB_OFF / 512u + (THUMB_BYTES + 511u) / 512u, (uint32_t)(uintptr_t)bounce,
+                     STATE_IMAGE_OFF / 512u - STATE_THUMB_OFF / 512u - (THUMB_BYTES + 511u) / 512u, 1u)) return ST_SD_FAIL;
+    } else {
+        if (!cd_xfer(STATE_THUMB_OFF / 512u, (uint32_t)(uintptr_t)bounce, sizeof(bounce) / 512u, 1u)) return ST_SD_FAIL;
+        if (!cd_xfer(STATE_THUMB_OFF / 512u + sizeof(bounce) / 512u, (uint32_t)(uintptr_t)bounce,
+                     STATE_IMAGE_OFF / 512u - STATE_THUMB_OFF / 512u - sizeof(bounce) / 512u, 1u)) return ST_SD_FAIL;
+    }
+    /* 5. the header: sectors 1..7, then sector 0 */
+    st_hdr.dma_ticks = st_dma_ticks;
+    st_hdr.wait_frames = st_wait;
+    st_hdr.checksum = 0;
+    st_hdr.checksum = hdr_checksum(&st_hdr);
+    if (!cd_write_header()) return ST_SD_FAIL;
+    return ST_OK;
+}
+
+/* card-direct: the state from its file on the card into RAM through the window: the header
+ * first for the checks (a marker or another ROM's state stops here, RAM untouched), the image
+ * with the displayed buffer's chunks last, then the RSP's memories. */
+static uint32_t cd_load_body(void) {
+    struct state_hdr *h = &st_hdr;
+    uint32_t crc1 = 0, crc2 = 0, ds, dl;
+    if (!cd_begin(st_card, st_view_live)) return ST_SD_FAIL;
+    dcache_writeback_all();
+    if (!cd_xfer(0, (uint32_t)(uintptr_t)h, STATE_HDR_LEN / 512u, 0)) return ST_SD_FAIL;
+    pio_read(0xB0000010u, &crc1);
+    pio_read(0xB0000014u, &crc2);
+    uint32_t st = hdr_status(h, crc1, crc2);
+    if (st != ST_OK) return st;
+    if (((h->image_off + h->image_len + 511u) / 512u) > sd_total) {
+        sd_last_error = 0xCCCE0000u;
+        return ST_NO_STATE;
+    }
+    dcache_writeback_all();
+    boot_words_copy(0);           /* this boot's engine entry words, put back after the copy */
+    uint32_t ilen = h->image_len, ioff = h->image_off;
+    if (ilen > image_len_max()) {
+        ilen = image_len_max();
+    }
+    ov_disp_range(&ds, &dl);      /* the displayed buffer last: the picture holds until the loaded moment appears */
+    cd_image_xfer = 1u;           /* (card-borrowed: the region under the hook goes to the stash file) */
+    for (uint32_t pass = 0; pass < 2u; pass++) {
+        if (pass == 1u) cd_load_hide(ds, dl);   /* the displayed buffer's chunks land over several frames: off screen meanwhile */
+        for (uint32_t off = 0; off < ilen; off += CD_WIN_SECTORS * 512u) {
+            uint32_t n = ((ilen - off) < (CD_WIN_SECTORS * 512u)) ? (ilen - off) : (CD_WIN_SECTORS * 512u);
+            uint32_t overlaps = dl && (off < ds + dl) && (ds < off + n);
+            if (overlaps != pass) continue;
+            if (!cd_xfer((ioff + off) / 512u, STATE_IMAGE_BASE + off, (n + 511u) / 512u, 0)) {
+                cd_image_xfer = 0;
+                boot_words_copy(1u);
+                return ST_DMA_FAIL;
+            }
+        }
+    }
+    cd_image_xfer = 0;
+    boot_words_copy(1u);
+    if (borrowed_mode()) borrow_diag_words(0);    /* the loaded world's words under the stage marks, for the epilogue */
+    if (h->regions_n && (h->regions[0].kind == REGION_RSP) && (h->regions[0].len == STATE_RSP_LEN) &&
+        ((h->regions[0].off + STATE_RSP_LEN) <= (slot_len_cur() - 0x1000u)) &&
+        (((h->regions[0].off + STATE_RSP_LEN) / 512u) <= sd_total)) {
+        const vu32 *src = (const vu32 *)(0xA0000000u | ((uint32_t)(uintptr_t)st_spmem & 0x1FFFFFFFu));
+        for (uint32_t half = 0; half < 2u; half++) {
+            dcache_writeback_all();
+            if (!cd_xfer(h->regions[0].off / 512u + half * 8u, (uint32_t)(uintptr_t)st_spmem, 8u, 0)) return ST_DMA_FAIL;
+            vu32 *dst = (vu32 *)(0xA4000000u + half * 0x1000u);
+            for (uint32_t i = 0; i < 1024u; i++) {
+                dst[i] = src[i];
+            }
+        }
+        SP_PC_REG = h->regions[0].arg;
+        if ((h->hook_version >= 11u) && (h->rsp_gpr[0] == RSP_GPR_MAGIC)) {
+            rsp_regs_load(h->rsp_gpr);
+        }
+        rsp_loop_pc = 0;
+    }
+    icache_invalidate_all();
+    return ST_OK;
+}
+#endif /* SC64SS_CARD_DIRECT */
 
 
 /* ---- Virtual Controller Pak ---------------------------------------------------
@@ -3141,7 +3798,11 @@ static uint32_t card_delete(uint32_t n) {
 #define VPAK_TABLE_OFF    0x8000u          /* the pak file's run table, after the image */
 #define VPAK_BLOCKS       (VPAK_LEN / 32u)
 #define VPAK_SETTLE_TICKS 90u
+#if SC64SS_CARD_DIRECT
+static uint32_t vpak_img[4] __attribute__((aligned(16))) = {0};   /* card-direct: no virtual pak (the menu never sets its bit) */
+#else
 static uint32_t vpak_img[VPAK_LEN / 4u] __attribute__((aligned(16))) = {0};
+#endif
 static uint32_t vpak_loaded = 0;
 static uint32_t vpak_dirty = 0, vpak_dirty_tick = 0, vpak_flushing = 0, vpak_sd_pending = 0;
 static uint32_t vpak_dirty_mask = 0, vpak_flush_mask = 0;   /* 2 KiB regions written since the last flush / still to copy in this one */
@@ -4121,10 +4782,19 @@ static uint32_t menu_exit(void) {
         *(vu32 *)(0xA4000000u + 4u * i) = w;
     }
     uint32_t seed = cic_seed_detect();
-    uint32_t tv = (*(vu32 *)0xA0000300u) & 3u;              /* osTvType: 0 PAL, 1 NTSC, 2 MPAL */
+    /* the console's own TV type, as the menu was booted with it (cfg spare bit 22 and bits 20..21);
+     * osTvType is the game's, which a PAL game on an NTSC console, or the ROM's TV type option,
+     * sets otherwise: the menu came back in the game's mode. Without the bit (an older menu's cfg),
+     * osTvType as before. 0 PAL, 1 NTSC, 2 MPAL */
+    uint32_t tv = (hook_cfg.spare & 0x400000u) ? ((hook_cfg.spare >> 20) & 3u) : ((*(vu32 *)0xA0000300u) & 3u);
     uint32_t ver = (tv == 0) ? 6u : ((tv == 1u) ? 1u : 4u);
     crumb(17u, 4u, seed);
     exit_stage = 4;
+    /* the menu that comes up next was asked for (Exit to menu, a suspend), not the reset button's:
+     * both reach it as warm starts, and the reset button may restart the game (the menu's Reset
+     * Button setting). The menu reads and clears it at its start; the data buffer's +0x1EF8 has
+     * no other use */
+    pio_write(BRAM_BASE + 0x1EF8u, 0x45584954u);   /* 'EXIT' */
     {
         register uint32_t r_s1 __asm__("s1") = 0;           /* clear RDRAM: no */
         register uint32_t r_a0 __asm__("a0") = 0;           /* keep RDRAM up: no, a cold boot's reset */
@@ -4151,6 +4821,124 @@ static uint32_t menu_exit(void) {
 
 #include "ss_overlay.c"
 
+/* A frame buffer that reaches into our home shows our own bytes at its bottom for as long as
+ * we are in (Pokemon Stadium 2 keeps its buffers at the top of RAM: noise under the panel, and
+ * through a load's three seconds or a save's five). At a borrowed visit's start the display goes
+ * to another whole buffer of the game's, from the monitor's history (ov_other_buffer), with the
+ * field's line offset kept; the visit's end puts it back. A load never comes back here: the
+ * loaded world's registers stand (state_do_load_body wrote them). */
+static uint32_t bufsw_on = 0, bufsw_vo = 0, bufsw_base0 = 0;
+#if SC64SS_CARD_DIRECT
+static uint32_t bufsw_copy_from = 0, bufsw_copy_to = 0, bufsw_copy_len = 0;   /* the panel's: the shown frame over the buffer it drew on */
+static uint32_t bufsw_home = 0;      /* the shown buffer reaches into our home: not put back on screen at the end */
+#endif
+/* always: the panel in the card-direct mode, which has no frame stash to give a save from the
+ * panel a clean frame: drawn on the game's other buffer, the save records the shown one */
+static void bufsw_begin(uint32_t always) {
+    struct ov_screen s;
+    uint32_t other;
+    bufsw_on = 0;
+    ov_screen_read(&s);
+#if SC64SS_CARD_DIRECT
+    /* the mode's check, not the shown buffer's: one wholly inside our home has no line of its
+     * own left (Pokemon Stadium 2's battle cycles three 320x240 buffers, the third at 0x7DA000:
+     * at a moment on it the switch gave up, the panel's own check failed the same way, and the
+     * visit ended without a panel, the hook's bytes on screen meanwhile) */
+    if (!ov_mode_ok(&s) || (!always && (s.height_all <= s.height))) return;
+    bufsw_home = (s.height < s.height_all) ? 1u : 0u;
+#else
+    if (!ov_screen_ok(&s) || (!always && (s.height_all <= s.height))) return;
+#endif
+    other = ov_other_buffer(&s);
+    if (!other) return;
+    bufsw_vo = VI_ORIGIN_REG;
+    bufsw_base0 = vi_frz_base0;
+#if SC64SS_CARD_DIRECT
+    /* the panel draws on the other buffer; a moment mid-frame can find there a finished frame the
+     * game shows next (the panel came back for a frame after closing, Conker's bar): at the end it
+     * gets the shown frame, which the panel never drew on (not when the shown one reaches into
+     * our home: those lines are ours during the visit) */
+    bufsw_copy_len = 0;
+    if (always && (s.height_all == s.height)) {
+        bufsw_copy_from = s.fb & 0x00FFFFFFu;
+        bufsw_copy_to = other;
+        bufsw_copy_len = s.width * s.height * s.bpp;
+    }
+#endif
+    other += (bufsw_vo & 0x00FFFFFFu) - (s.fb & 0x00FFFFFFu);   /* the field's line in, as the register had it */
+    if (vi_frz_active && vi_frz_base0) vi_frz_base0 = other;
+    VI_ORIGIN_REG = other;
+    bufsw_on = 1u;
+}
+static void bufsw_end(void) {
+    if (!bufsw_on) return;
+#if SC64SS_CARD_DIRECT
+    if (bufsw_copy_len) {
+        const vu32 *src = (const vu32 *)(0xA0000000u | bufsw_copy_from);
+        vu32 *dst = (vu32 *)(0xA0000000u | bufsw_copy_to);
+        for (uint32_t i = 0; i < bufsw_copy_len / 4u; i++) dst[i] = src[i];
+        bufsw_copy_len = 0;
+    }
+#endif
+#if SC64SS_CARD_DIRECT
+    if (bufsw_home) {
+        /* the shown buffer's lines in our home are ours until the monitor has put the region
+         * back: it stays off screen (the game's next VI programming shows it again, by then
+         * whole); the switched-to buffer holds the picture meanwhile */
+        bufsw_home = 0;
+        bufsw_on = 0;
+        return;
+    }
+#endif
+    if (vi_frz_active) vi_frz_base0 = bufsw_base0;
+    VI_ORIGIN_REG = bufsw_vo;
+    bufsw_on = 0;
+}
+
+#if SC64SS_CARD_DIRECT
+/* A run of zeros in the loaded image long enough for a frame (a black picture), outside the low
+ * 64 KiB, the hook's home and the range given: sampled per 16 KiB block as ai_silence_find does,
+ * the pick then verified whole. 0 = none. */
+static uint32_t zero_run_find(uint32_t bytes, uint32_t avoid_lo, uint32_t avoid_hi) {
+    uint32_t need = (bytes + AI_ZBLK - 1u) / AI_ZBLK + 1u, b, k, run = 0;
+    for (b = 0x00010000u; b < 0x007D0000u; b += AI_ZBLK) {
+        uint32_t z = 0;
+        if (((b + AI_ZBLK) > avoid_lo) && (b < avoid_hi)) { run = 0; continue; }
+        for (k = 0; k < AI_ZBLK; k += AI_ZBLK / 32u) z |= *(vu32 *)(0xA0000000u + b + k);
+        if (z) { run = 0; continue; }
+        if (++run >= need) {
+            uint32_t start = b + AI_ZBLK - need * AI_ZBLK;
+            for (k = 0; k < need * AI_ZBLK; k += 4u) {
+                if (*(vu32 *)(0xA0000000u + start + k)) return 0;
+            }
+            return start;
+        }
+    }
+    return 0;
+}
+
+/* The load's last pass fills the buffer on screen, 4 KiB at a time over several frames, and the
+ * picture changed piecewise meanwhile. The display goes to another whole buffer of the game's
+ * (the loaded world's other frame by now), or to a run of zeros in the loaded image (black),
+ * for the pass; state_finish_load sets the loaded world's own registers after it. */
+static void cd_load_hide(uint32_t ds, uint32_t dl) {
+    struct ov_screen s;
+    uint32_t to, size;
+    ov_screen_read(&s);
+    if (!ov_screen_ok(&s) || !dl) return;
+    size = s.width * s.bpp * s.height_all;
+    to = ov_other_buffer(&s);
+    if (to) {
+        to += (VI_ORIGIN_REG & 0x00FFFFFFu) - (s.fb & 0x00FFFFFFu);   /* the field's line in, as the register had it */
+    } else {
+        to = zero_run_find(size, ds, ds + dl);
+    }
+    if (!to) return;
+    if (vi_frz_active && vi_frz_base0) vi_frz_base0 = to;
+    VI_ORIGIN_REG = to;
+}
+#endif
+
 
 /* ---- borrowed-RAM mode --------------------------------------------------------
  * Games that use all 8 MiB (DK64, Perfect Dark) get no resident hook. A monitor on
@@ -4167,6 +4955,15 @@ static uint32_t menu_exit(void) {
 #define BORROW_DIAG1    (*(vu32 *)0xA00001ACu)
 #define BORROW_LO       0x007D0000u
 #define BORROW_HI       0x007F0000u
+#if SC64SS_CARD_DIRECT
+#define CTX_PI_CUR          CD_CTX_PI          /* card-borrowed: the context in the data buffer */
+#define MONITOR_KSEG1_CUR   CD_MONITOR_KSEG1   /* ... and the monitor in the flash tables' block */
+#define CFG_STAGED_CUR      CD_CFG_MIRROR      /* ... and the staged cfg's live copy: the mirror */
+#else
+#define CTX_PI_CUR          CTX_PI
+#define MONITOR_KSEG1_CUR   MONITOR_KSEG1
+#define CFG_STAGED_CUR      (0xA0000000u | (HOOK_STAGING_PI + ((uint32_t)(uintptr_t)&hook_cfg - 0x807D0000u)))
+#endif
 extern uint32_t borrow_epilogue;          /* entry.S: where to go instead of the game, 0 = the game */
 static uint32_t bounce[0x2000u / 4u] __attribute__((aligned(16))) = {0};   /* cart <-> cart, 8 KiB at a time */
 
@@ -4225,14 +5022,30 @@ static void borrow_load_exit(void) {
     *(vu32 *)0x800001D4u = st_hdr.reserved[1];   /* load epilogue and the RAM exit stub put them back last */
     rom_write_set(1u);
     dcache_writeback_all();
-    pi_dma((uint32_t)(uintptr_t)&st_hdr.ctx, CTX_PI, 0x220u, 1u);
+    pi_dma((uint32_t)(uintptr_t)&st_hdr.ctx, CTX_PI_CUR, 0x220u, 1u);
     /* the silence for the monitor's load epilogue to queue once the region is back (0: none;
-     * bit 31 of the length: twice, the probe build's mode 5) */
-    pio_write(0xA0000000u | (CTX_PI + 0x228u), ai_zsrc);
-    pio_write(0xA0000000u | (CTX_PI + 0x22Cu), ai_zsrc ? AI_ZBLK : 0u);
+     * bit 31 of the first length: a second one behind it, of the length at +0x230) */
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x228u), ai_zsrc);
+#if SC64SS_CARD_DIRECT
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x238u), (st_hdr.reraise_sp & RR_PI) ? 1u : 0u);   /* the loaded moment's PI line: the epilogue raises it again (mon_pi_owed_exit) */
+#endif
+#if AI_REPLAY
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x22Cu), ai_zsrc ? (ai_len1 | (ai_len2 ? 0x80000000u : 0u)) : 0u);
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x230u), ai_zsrc ? ai_len2 : 0u);
+#elif AI_DIAG
+    if ((ai_kick_mode & 7u) == 3u) {   /* (probe) two short silences from the block, the epilogue's two DMAs */
+        pio_write(0xA0000000u | (CTX_PI_CUR + 0x22Cu), ai_zsrc ? (1968u | 0x80000000u) : 0u);
+        pio_write(0xA0000000u | (CTX_PI_CUR + 0x230u), ai_zsrc ? 1968u : 0u);
+    } else {
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x22Cu), ai_zsrc ? (AI_ZBLK | (((ai_kick_mode & 7u) == 5u) ? 0x80000000u : 0u)) : 0u);
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x230u), ai_zsrc ? AI_ZBLK : 0u);
+    }
+#else
+    pio_write(0xA0000000u | (CTX_PI_CUR + 0x22Cu), ai_zsrc ? AI_ZBLK : 0u);
+#endif
     rom_write_set(0);
     crumb(0x63u, st_hdr.ctx.epc, st_hdr.ctx.status);
-    ((void (*)(void))(uintptr_t)(MONITOR_KSEG1 + MON_EPIL_OFF))();
+    ((void (*)(void))(uintptr_t)(MONITOR_KSEG1_CUR + MON_EPIL_OFF))();
     for (;;) {
     }
 }
@@ -4246,7 +5059,7 @@ static uint32_t borrow_pc = 0;
 
 static void borrow_pc_ack(uint32_t status) {
     if (!borrow_pc) return;
-    uint32_t base = 0xA0000000u | (HOOK_STAGING_PI + ((uint32_t)(uintptr_t)&hook_cfg - 0x807D0000u));
+    uint32_t base = CFG_STAGED_CUR;
     if (rom_write_set(1u)) {          /* the staged copy is ROM space: writes land only with the cart's
                                        * ROM-write enable on (without it the request stayed, and the
                                        * monitor took screenshot after screenshot) */
@@ -4288,7 +5101,7 @@ static uint32_t shot_copy(uint32_t src, uint32_t dst, uint32_t n) {
     return 1u;
 }
 
-static uint32_t shot_take(void) {
+static uint32_t CD_UNUSED shot_take(void) {
     struct ov_screen s;
     static uint32_t hdr[4] __attribute__((aligned(16))) = {0x53484F54u, 0, 0, 0};   /* initialised: .data, not .bss */
     ov_screen_read(&s);
@@ -4337,12 +5150,23 @@ static uint32_t mod65521(uint32_t x) {                 /* 2^16 = 15 (mod 65521) 
 }
 
 static void pw_flush(uint32_t all) {
+#if SC64SS_CARD_DIRECT
+    /* card-direct: whole sectors of the screenshot file, from pw_dst (a file sector) on */
+    uint32_t n = pw_fill;
+    (void) all;
+    if (n == 0) return;
+    dcache_writeback_all();
+    if (!cd_xfer(pw_dst + pw_total / 512u, (uint32_t)(uintptr_t)bounce, (n + 511u) / 512u, 1u)) pw_ok = 0;
+    pw_total += (n + 511u) & ~511u;
+    pw_fill = 0;
+#else
     uint32_t n = all ? ((pw_fill + 15u) & ~15u) : pw_fill;   /* the last piece padded (the file is longer anyway) */
     if (n == 0) return;
     dcache_writeback_all();
     if (!pi_dma((uint32_t)(uintptr_t)bounce, pw_dst + pw_total, n, 1u)) pw_ok = 0;
     pw_total += n;
     pw_fill = 0;
+#endif
 }
 
 static void pw_byte(uint32_t b) {
@@ -4420,7 +5244,18 @@ static const uint8_t *shot_row(uint32_t phys, uint32_t bytes) {
         d[i] = (uint8_t)(v >> 24); d[i + 1u] = (uint8_t)(v >> 16); d[i + 2u] = (uint8_t)(v >> 8); d[i + 3u] = (uint8_t)v;
     }
     uint32_t rest = bytes - below;
+#if SC64SS_CARD_DIRECT
+    if (rest) {                           /* card-borrowed: the stash file's sectors into the window, then the bytes */
+        uint32_t off = phys + below - BORROW_LO, s0 = off / 512u, cnt = (off % 512u + rest + 511u) / 512u;
+        if (!cd_stash_sec || (cnt > CD_WIN_SECTORS) ||
+            !sc64_command_long(SC64_CMD_SD_SECTOR_SET, cd_stash_sec + s0, 0, CMD_TIMEOUT_TICKS) ||
+            !sc64_command_long(SC64_CMD_SD_READ, CD_WIN_PI, cnt, SD_XFER_TIMEOUT_TICKS) ||
+            !pi_dma((uint32_t)(uintptr_t)bounce_buf + below, CD_WIN_PI + (off % 512u), rest, 0u)) pw_ok = 0;
+        cd_next_sec = 0;
+    }
+#else
     if (rest && !pi_dma((uint32_t)(uintptr_t)bounce_buf + below, STASH_PI + (phys + below - BORROW_LO), rest, 0u)) pw_ok = 0;
+#endif
     return d;
 }
 
@@ -4436,7 +5271,18 @@ static uint32_t shot_capture(void) {
     if ((rowb > sizeof(bounce_buf)) || (phys + stride * h > 0x00800000u)) return ST_BAD_ARGS;
     ov_stamp_now(&date, &time);
     if (!rom_write_set(1u)) return ST_NO_ROM_WRITE;
-    pw_dst = FRAME_STASH_PI; pw_fill = 0; pw_total = 0; pw_len = 0; pw_ok = 1;
+#if SC64SS_CARD_DIRECT
+    /* card-direct: the PNG goes to the screenshot file at its fill point as it is built
+     * (sd_write_begin_shot then writes the header); the file's runs and marker first */
+    if (!hook_cfg.shot_sectors || !shot_room()) return ST_NO_ROOM;
+    cd_next_sec = 0;
+    if (!sd_ensure_init() || !sd_load_runs_at(CD_SHOT_TABLE_PI) || !sd_verify_shot()) return ST_SD_FAIL;
+    cd_next_sec = 0;
+    pw_dst = hook_cfg.shot_fill;
+#else
+    pw_dst = FRAME_STASH_PI;
+#endif
+    pw_fill = 0; pw_total = 0; pw_len = 0; pw_ok = 1;
     pw_a = 1; pw_b = 0; pw_an = 0;
     pw_byte(0x89u); pw_byte(0x50u); pw_byte(0x4Eu); pw_byte(0x47u); pw_byte(0x0Du); pw_byte(0x0Au); pw_byte(0x1Au); pw_byte(0x0Au);
     pw_chunk_open("IHDR", 13u);
@@ -4589,17 +5435,34 @@ static void borrow_run(void) {
     uint32_t c_in = c0_count(), cmp_in = c0_compare();   /* the game's clock as we found it */
     uint32_t slot0 = hook_cfg.cur_slot, shot_fill0_in = hook_cfg.shot_fill;
     BORROW_REQ = 0;
-    borrow_epilogue = MONITOR_KSEG1;      /* +0: mon_epilogue */
+    borrow_epilogue = MONITOR_KSEG1_CUR;  /* +0: mon_epilogue */
+#if SC64SS_CARD_DIRECT
+    /* the display off a buffer under our home first of all: the tables below read every card
+     * slot's header from the card (tens of milliseconds), and until the switch the shown buffer's
+     * lines in our home show our own bytes (Pokemon Stadium 2's battle: a band of noise at the
+     * top or the bottom as the panel opened). The switch reads only the VI and the monitor's
+     * history; the panel always (op 3), a resume as the load it becomes (op 4) */
+    if ((op == 1u) || (op == 2u) || (op == 3u) || (op == 4u) || (op == 7u)) bufsw_begin(op == 3u);
+#endif
     crumb(0x60u, op, BORROW_GUARD);
     if (ensure_unlocked()) {
         dbg_unlock_ok++;                  /* state_queue wants to have heard from the cart */
     } else {
         crumb(0x61u, 0, 0);
+#if SC64SS_CARD_DIRECT
+        bufsw_end();
+#endif
         return;
     }
+#if SC64SS_CARD_DIRECT
+    cd_tables_init();                     /* the cfg from the mirror, the index from the files, the stash's sector */
+#endif
     if (op == 4u) {                       /* a suspended state: as the resident hook's resume */
         uint32_t slot = hook_cfg.resume_card;   /* the card slot + 1 (the menu found the mark in its file) */
         if (!slot || (slot > card_count())) {
+#if SC64SS_CARD_DIRECT
+            bufsw_end();
+#endif
             return;
         }
         hook_cfg.cur_slot = slot - 1u;
@@ -4613,9 +5476,16 @@ static void borrow_run(void) {
         AI_DG_KICK((hook_cfg.pc_req >> 8) & 0xFu);
         hook_cfg.pc_req = 0;          /* (a write-back of the block must not repeat it) */
     }
+#if !SC64SS_CARD_DIRECT
+    if ((op == 1u) || (op == 2u) || (op == 3u) || (op == 7u)) bufsw_begin((op == 3u) && SC64SS_CARD_DIRECT);   /* the display off a buffer under our home; the panel always, card-direct */
+#endif
     uint32_t pc_status = ST_OK;
     if (op == 5u) {
+#if SC64SS_CARD_DIRECT
+        pc_status = ST_BAD_ARGS;      /* the PC's raw frame to a cart slot: no cart slot in this mode */
+#else
         pc_status = shot_take();      /* a screenshot for the PC: no state machinery involved */
+#endif
         crumb(0x64u, pc_status, hook_cfg.pc_shot);
     } else if (op == 7u) {
         pc_status = shot_borrow();    /* the screenshot button (or a PC's request): the frame to the card */
@@ -4660,11 +5530,18 @@ static void borrow_run(void) {
     if ((hook_cfg.cur_slot != slot0) || (hook_cfg.shot_fill != shot_fill0_in)) {
         /* the slot chosen on the panel, or a screenshot's place in the file, into the staged
          * copy: the next visit starts from it (a visit's statics do not survive it) */
+#if SC64SS_CARD_DIRECT
+        const uint32_t *cw = (const uint32_t *)&hook_cfg;
+        for (uint32_t i = 0; i < CFG_WORDS; i++) {
+            pio_write(CD_CFG_MIRROR + 4u * i, cw[i]);
+        }
+#else
         if (rom_write_set(1u)) {
             dcache_writeback_all();
             pi_dma((uint32_t)(uintptr_t)&hook_cfg, HOOK_STAGING_PI + ((uint32_t)(uintptr_t)&hook_cfg - 0x807D0000u), sizeof(hook_cfg), 1u);
             rom_write_set(0);
         }
+#endif
     }
     /* The game's clock: the whole borrow never happened. The state machinery's freeze
      * hides only its own span (vi_frz_end), and in borrowed mode the SD mirror of a
@@ -4676,6 +5553,7 @@ static void borrow_run(void) {
      * the epilogue's are a few frames at most). A load never gets here. */
     c0_set_count(c_in + 400u);
     c0_set_compare(cmp_in);
+    bufsw_end();
     borrow_pc_ack(((op == 5u) || (op == 7u) || ((op == 3u) && (borrow_pc & 0xFF00u))) ? pc_status : st_last_status);
     crumb(0x62u, st_last_status, sd_state);
 }
@@ -4701,6 +5579,19 @@ void hook_tick(void) {
         pi_saved_cart = PI_CART_ADDR;
     }
     si_saved_dram = SI_DRAM_ADDR;
+#if AI_REPLAY
+    if (borrowed_mode()) {
+        /* the monitor took it at the borrow's first instant (CTX+0x234): by now, after the stash
+         * and the hook's own transfer, a small DMA has drained */
+        pio_read(0xA0000000u | (CTX_PI_CUR + 0x234u), &ai_moment);
+        pio_read(0xA0000000u | (CTX_PI_CUR + 0x23Cu), &ai_rate_bytes);   /* and the DMA's drain, timed there (mon_airate) */
+        pio_read(0xA0000000u | (CTX_PI_CUR + 0x240u), &ai_rate_ticks);
+    } else {
+        ai_moment = (AI_STATUS & (AI_REC_FULL | AI_REC_BUSY)) | AI_REC_VALID | (AI_LEN & 0x3FFFFu);   /* the audio FIFO as the game left it */
+        ai_rate_bytes = 0;
+        ai_rate_ticks = 0;
+    }
+#endif
     pi_touched = 0;
     si_touched = 0;
 
@@ -4744,7 +5635,13 @@ void hook_tick(void) {
     uint32_t cause = c0_cause();
     dbg_last_cause = cause;
     if ((cause & CAUSE_EXC_MASK) != 0) goto out;   /* not an interrupt */
-    if (cause & CAUSE_IP4_PRENMI) goto out;        /* reset pressed: hands off */
+    if (cause & CAUSE_IP4_PRENMI) {
+        /* reset pressed: hands off, and 'RSET' at the data buffer's +0x1EFC for the menu, which
+         * reads and clears it at its start (its Reset Button setting may start the game again
+         * after it; a power-on leaves no word) */
+        pio_write(BRAM_BASE + 0x1EFCu, 0x52534554u);
+        goto out;
+    }
     if (!(cause & CAUSE_IP2_RCP)) goto out;        /* RCP line not pending */
     dbg_last_mi = MI_INTERRUPT;
     if (!(dbg_last_mi & MI_INTR_VI)) goto out;     /* not a VI interrupt */
@@ -4756,6 +5653,12 @@ void hook_tick(void) {
         epoch = (now | 1u);
     }
     ticks++;
+#if AI_REPLAY
+    {   /* the game's usual audio buffer: the largest remaining length seen, decaying slowly */
+        uint32_t l = AI_LEN & 0x3FFFFu;
+        if (l > ai_len_typ) ai_len_typ = l; else if (!(ticks & 63u)) ai_len_typ -= ai_len_typ >> 3;
+    }
+#endif
     vi_fld_record();                                 /* the set the game wrote for the field just ended */
     dbg_gate_pass++;
     TR_STAGE = 4; /* DIAG: VI gate passed */
@@ -4792,6 +5695,9 @@ void hook_tick(void) {
         goto out;
     }
     dbg_unlock_ok++;
+#if SC64SS_CARD_DIRECT
+    cd_tables_init();                /* the index and the screenshot header from flash, once */
+#endif
 
     {
         SEC_T0();

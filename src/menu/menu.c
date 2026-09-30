@@ -76,6 +76,15 @@ static void menu_init (boot_params_t *boot_params) {
         }
         data_cache_hit_writeback(sc64ss_lowpage, sizeof(sc64ss_lowpage));
         dma_write(sc64ss_lowpage, 0x1FFE1400UL, sizeof(sc64ss_lowpage));
+        // SC64SS: the routine's Exit to menu (and a suspend) leaves 'EXIT' at +0x1EF8 as its last
+        // act: this start was asked for, not the reset button's (both come as warm starts)
+        menu->exit_start = (io_read(0x1FFE1EF8UL) == 0x45584954UL);
+        io_write(0x1FFE1EF8UL, 0);
+        // SC64SS: and 'RSET' at +0x1EFC when the reset button was pressed in a game with the
+        // routine (it watches for the console's pre-reset interrupt): the reset type the menu is
+        // booted with is warm after a power-on as well, so it can't tell the two apart
+        menu->reset_start = (io_read(0x1FFE1EFCUL) == 0x52534554UL);
+        io_write(0x1FFE1EFCUL, 0);
     }
 
     joypad_init();

@@ -59,6 +59,19 @@ static void view_pc_report(uint32_t done, uint32_t stage, uint32_t pc) {
  * mirror is not in flight (card_bind's rule), its header zeroed, the card slot it held
  * forgetting it (the card has that state), the cart table entry left free: no card slot is
  * bound, so nothing is mirrored and no later launch can take the scratch for a state. */
+#if SC64SS_CARD_DIRECT
+/* card-direct: the scratch is a file on the card (<checkcode>.stx, its run table in flash);
+ * the streaming bodies go to it while st_view_live is set */
+static uint32_t cart_scratch_take(void) {
+    uint32_t magic = 0;
+    if (!pio_read(0xA0000000u | CD_SCRATCH_TABLE_PI, &magic) || (magic != SD_RUNS_MAGIC)) return 0;
+    return CD_TOKEN;
+}
+
+static void cart_scratch_drop(uint32_t base) {
+    (void) base;
+}
+#else
 static uint32_t cart_scratch_take(void) {
     uint32_t k = hook_cfg.slots_n, p = CFG_SLOTS_MAX, best = SLX_NONE, i;
     if (k > CFG_SLOTS_MAX) k = CFG_SLOTS_MAX;
@@ -93,6 +106,7 @@ static void cart_scratch_drop(uint32_t base) {
     pio_write(0xA0000000u | (base + STATE_HDR_OFF), 0);
     slx_wrdone(was);
 }
+#endif
 
 /* the game's own task records in RAM: type 1, flags small, a list pointer and a text and a
  * data address that look like RAM, sizes that fit the RSP; the first FF_MAX_REC of them */
@@ -121,7 +135,11 @@ static uint32_t view_walk_task(struct ff_mem *mem, uint32_t seed) {
     for (i = 2; i < 16u; i += 2u) v->task[i] &= 0x1FFFFFFFu;
     v->task[11] &= 0x1FFFFFFFu;
     for (i = 0; i < 2u && !clean; i++) {
+#if FF_CBFD
+        uint32_t family = (i == 0) ? (ff_cbfd_text(mem, v->task[4]) ? FF_FAM_F3DEX2CBFD : FF_FAM_F3DEX2) : FF_FAM_F3D;
+#else
         uint32_t family = (i == 0) ? FF_FAM_F3DEX2 : FF_FAM_F3D;   /* the walk proves the encoding */
+#endif
         uint32_t seg[16], k;
         uint32_t tab = (family == FF_FAM_F3D) ? FF_SEGTAB_F3D : FF_SEGTAB_F3DEX2;
         for (k = 0; k < 16u; k++) seg[k] = seed ? *(vu32 *)(0xA4000000u + tab + 4u * k) : 0u;
@@ -136,6 +154,22 @@ static uint32_t view_walk_task(struct ff_mem *mem, uint32_t seed) {
  * string the data carries (its offset inside the data is the string's offset in the buffer;
  * the data's first bytes change during a task, the string does not), outside the yield
  * buffer; failing that, a game record with the same text whose data is not the yield buffer. */
+#if SC64SS_CARD_DIRECT
+/* the same microcode text at two places (a game may keep two copies of one microcode, its
+ * records naming either: Conker's): the first 64 bytes equal */
+static uint32_t view_same_text(uint32_t a, uint32_t b, uint32_t limit) {
+    uint32_t i;
+    if ((a & 7u) || (b & 7u) || (a + 64u > limit) || (b + 64u > limit) || (a < 0x400u) || (b < 0x400u)) return 0;
+    if (a == b) return 1u;
+    for (i = 0; i < 16u; i++) {
+        if (*(const vu32 *)(0xA0000000u | (a + 4u * i)) != *(const vu32 *)(0xA0000000u | (b + 4u * i))) return 0;
+    }
+    return 1u;
+}
+#else
+#define view_same_text(a, b, limit) ((a) == (b))   /* the plain blob is full: the address, as before */
+#endif
+
 static void view_find_data(uint32_t limit) {
     struct ff_view *v = &ffv;
     const uint32_t *t = v->task;
@@ -164,7 +198,7 @@ static void view_find_data(uint32_t limit) {
     for (i = 0; i < v->n_rec; i++) {
         const vu32 *r = (const vu32 *)(0xA0000000u | v->rec[i]);
         uint32_t d = r[6] & 0x1FFFFFFFu;
-        if (((r[4] & 0x1FFFFFFFu) != t[4]) || (d == t[14]) || (d + 0x800u > limit) || !r[7] || (r[7] > 0x800u)) continue;
+        if (!view_same_text(r[4] & 0x1FFFFFFFu, t[4], limit) || (d == t[14]) || (d + 0x800u > limit) || !r[7] || (r[7] > 0x800u)) continue;
         v->data_src = d;
         v->data_len = r[7];
         return;
@@ -178,6 +212,48 @@ static uint32_t view_sp_dma_wait(void) {
     }
     return 1u;
 }
+
+/* A run that gave up (the RSP never halted, the RDP never went idle): the console must be
+ * able to go on after the load that follows (Conker's panel FreeCam left it wedged: the RSP
+ * stuck at PC 0, the game finding no moment ever again). The SP line the halt may have raised
+ * and the DP line the depth clear left are cleared, the RDP given 50 ms to settle, and eight
+ * words go to the cart buffer at +0xC00 (the mailbox, no stream crosses it) for the PC: 'VABT', SP_STATUS at the timeout, SP_PC,
+ * DPC_STATUS, the boot address the record gave, src_ram | MI_INTR, IMEM[0], IMEM[1]. */
+#if SC64SS_CARD_DIRECT
+static void view_abort_diag(uint32_t sps, uint32_t pc) {
+    struct ff_view *v = &ffv;
+    uint32_t t0 = c0_count();
+    while (DPC_STATUS & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) {
+        if ((c0_count() - t0) > 46875u * 50u) break;
+    }
+    pio_write(BRAM_BASE + 0xC00u, 0x56414254u);
+    pio_write(BRAM_BASE + 0xC04u, sps);
+    pio_write(BRAM_BASE + 0xC08u, pc);
+    pio_write(BRAM_BASE + 0xC0Cu, DPC_STATUS);
+    pio_write(BRAM_BASE + 0xC10u, v->task[2]);
+    pio_write(BRAM_BASE + 0xC14u, (v->src_ram ? 0x80000000u : 0u) | (MI_INTERRUPT & 0x3Fu));
+    pio_write(BRAM_BASE + 0xC18u, *(vu32 *)0xA4001000u);
+    pio_write(BRAM_BASE + 0xC1Cu, *(vu32 *)0xA4001004u);
+    pio_write(BRAM_BASE + 0xC20u, st_hdr.reraise_sp);
+    pio_write(BRAM_BASE + 0xC24u, DPC_START);
+    pio_write(BRAM_BASE + 0xC28u, DPC_END);
+    pio_write(BRAM_BASE + 0xC2Cu, DPC_CURRENT);
+    pio_write(BRAM_BASE + 0xC30u, v->data_src);
+    pio_write(BRAM_BASE + 0xC34u, v->data_len);
+    pio_write(BRAM_BASE + 0xC38u, v->map.main_cimg);
+    pio_write(BRAM_BASE + 0xC3Cu, v->spare);
+    {
+        uint32_t cur = DPC_CURRENT & 0x00FFFFF8u, i;
+        for (i = 0; i < 8u; i++) {
+            pio_write(BRAM_BASE + 0xC40u + 4u * i, ((cur >= 16u) && (cur + 16u < 0x00800000u)) ? *(const vu32 *)(0xA0000000u | (cur - 16u + 4u * i)) : 0u);
+        }
+    }
+    SP_STATUS = SP_CLR_INTR;
+    MI_INIT_MODE = MI_MODE_CLR_DP;
+}
+#else
+#define view_abort_diag(sps, pc) do { (void)(sps); (void)(pc); } while (0)   /* the plain blob is full: no room yet */
+#endif
 
 /* The frame's task once more, exactly as osSpTaskLoad and osSpTaskStartGo run it: the task
  * record in DMEM 0xFC0 (the state's own, or the game's from RAM; its data field repaired
@@ -204,8 +280,9 @@ static uint32_t view_task_run(void) {
     t0 = c0_count();
     while (!(SP_STATUS & SP_HALT)) {
         if ((c0_count() - t0) > 46875u * 250u) {
-            uint32_t pc = SP_PC_REG;
+            uint32_t pc = SP_PC_REG, sps = SP_STATUS;
             SP_STATUS = (1u << 1);          /* halt it */
+            view_abort_diag(sps, pc);       /* what it saw, for the PC; the SP and DP lines cleared, the RDP waited for */
             view_pc_report(0, 6u, pc);
             return 0;
         }
@@ -213,6 +290,7 @@ static uint32_t view_task_run(void) {
     t0 = c0_count();
     while (DPC_STATUS & (DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_DMA_BUSY)) {
         if ((c0_count() - t0) > 46875u * 250u) {
+            view_abort_diag(SP_STATUS, SP_PC_REG);
             view_pc_report(0, 7u, SP_PC_REG);
             return 0;
         }
@@ -335,12 +413,48 @@ static uint32_t view_pc_command(void) {
     return 0;
 }
 
+/* (dev) a declined view says which check at +0x94: over, stage 0x10 + the check's number
+ * (1 no clean walk, 2 no code or data pointer, 3 no perspective or colour image, 4 not the
+ * frame on screen, 5/6 no spare buffer for a list drawing under the hook, 7 a depth image there) */
+#define VIEW_DECLINE(n) return ST_BAD_STATE
+
+#if FF_CBFD
+/* The game's own record of the frame the RSP is on, when the RSP's copy (DMEM 0xFC0) is not
+ * the frame's start. A microcode switch mid-list rewrites the copy's code and list fields
+ * (Conker: every frame begins under F3DEXBG and switches to F3DEX at its 178th command; the
+ * copy then names the second microcode and the command after the switch, or, after a resume,
+ * the second microcode with the list's start). A fresh run needs the first microcode, its
+ * data and the list's start, as the game's static record has them: the record whose list
+ * spans the copy's list pointer, with the copy's boot, output buffer and yield buffer, a data
+ * field that is not the yield buffer (the OS's working copy of a resumed task has that), and a
+ * code or list field the copy does not share. FF_MAX_REC when the copy is the frame's start. */
+static uint32_t view_frame_record(void) {
+    struct ff_view *v = &ffv;
+    const uint32_t *t = v->task;
+    uint32_t r, ptr = t[12] & 0x1FFFFFFFu;
+    for (r = 0; r < v->n_rec; r++) {
+        const vu32 *rec = (const vu32 *)(0xA0000000u | v->rec[r]);
+        uint32_t list = rec[12] & 0x1FFFFFFFu, code = rec[4] & 0x1FFFFFFFu, data = rec[6] & 0x1FFFFFFFu;
+        if (((rec[2] ^ t[2]) & 0x1FFFFFFFu) || ((rec[10] ^ t[10]) & 0x1FFFFFFFu) || ((rec[14] ^ t[14]) & 0x1FFFFFFFu)) continue;
+        if (data == (rec[14] & 0x1FFFFFFFu)) continue;
+        if ((ptr < list) || (ptr >= list + rec[13])) continue;
+        if ((code == (t[4] & 0x1FFFFFFFu)) && (list == ptr)) continue;
+        return r;
+    }
+    return FF_MAX_REC;
+}
+#endif
+
 static uint32_t view_run(void) {
     struct ff_view *v = &ffv;
     struct ff_mem mem;
     uint32_t i, clean = 0;
     zero(v, sizeof *v);
+#if SC64SS_CARD_DIRECT
+    v->cfg_base = CD_CFG_MIRROR;                /* the staged copy is flash: the PC's words live in the data buffer */
+#else
     v->cfg_base = 0xA0000000u | (HOOK_STAGING_PI + ((uint32_t)(uintptr_t)&hook_cfg - 0x807D0000u));
+#endif
     mem.base = (const uint8_t *)0xA0000000u;    /* uncached: the loaded image as the RSP sees it */
     mem.limit = image_len();
     if (borrowed_mode()) {
@@ -369,8 +483,21 @@ static uint32_t view_run(void) {
     }
     for (i = 0; i < 16u; i++) v->task[i] = *(vu32 *)(0xA4000FC0u + 4u * i);
     if (v->task[0] == 1u) {
-        clean = view_walk_task(&mem, 1u) && v->map.n_persp;   /* a 2D task last (Turok's HUD): the 3D frame is a record in RAM */
-        v->seed_ok = clean;
+#if FF_CBFD
+        uint32_t r = view_frame_record();
+        if (r < FF_MAX_REC) {                   /* the frame began under another microcode, or earlier in the list: the game's record */
+            const vu32 *rec = (const vu32 *)(0xA0000000u | v->rec[r]);
+            for (i = 0; i < 16u; i++) v->task[i] = rec[i];
+            clean = view_walk_task(&mem, 0) && v->map.n_persp;   /* its own data, no seed from DMEM (another microcode's) */
+            if (clean) v->src_ram = 1u;
+            else for (i = 0; i < 16u; i++) v->task[i] = *(vu32 *)(0xA4000FC0u + 4u * i);
+        }
+        if (!clean)
+#endif
+        {
+            clean = view_walk_task(&mem, 1u) && v->map.n_persp;   /* a 2D task last (Turok's HUD): the 3D frame is a record in RAM */
+            v->seed_ok = clean;
+        }
     }
     if (!clean) {
         uint32_t best = FF_MAX_REC, r;
@@ -389,16 +516,16 @@ static uint32_t view_run(void) {
         }
     }
     if (!clean) {
-        return ST_BAD_STATE;
+        VIEW_DECLINE(1u);
     }
     v->segtab_off = (v->map.family == FF_FAM_F3D) ? FF_SEGTAB_F3D : FF_SEGTAB_F3DEX2;
     for (i = 0; i < 16u; i++) v->segtab[i] = v->seed_ok ? *(vu32 *)(0xA4000000u + v->segtab_off + 4u * i) : 0u;
     view_find_data(mem.limit);
     if (!v->task[2] || !v->task[4]) {
-        return ST_BAD_STATE;
+        VIEW_DECLINE(2u);
     }
     if (!v->map.n_persp || !v->map.main_cimg) {
-        return ST_BAD_STATE;
+        VIEW_DECLINE(3u);
     }
     /* the segment table the state left, into the data copy the boot will load (the world is
      * disposable: the exit's reload puts the original bytes back) */
@@ -419,14 +546,14 @@ static uint32_t view_run(void) {
         const uint32_t *t = v->task;
         for (i = 0; i < v->map.n_cimg; i++) if (v->map.cimg[i].addr == a) w0 = v->map.cimg[i].w0;
         v->width = (w0 & 0xFFFu) + 1u;
-        if (v->width != (st_hdr.vi[2] & 0xFFFu)) return ST_BAD_STATE;   /* not the frame on screen (Episode I Racer: a 320-wide list under a 640-wide VI) */
+        if (v->width != (st_hdr.vi[2] & 0xFFFu)) VIEW_DECLINE(4u);   /* not the frame on screen (Episode I Racer: a 320-wide list under a 640-wide VI) */
         v->height = v->map.scissor_h ? v->map.scissor_h : ((v->width >= 400u) ? 480u : 240u);
         line = v->width * ((((w0 >> 19) & 3u) == 3u) ? 4u : 2u);
         size = line * v->height;
         for (i = 0; i < v->map.n_cimg; i++) ff_mark(&v->map, v->map.cimg[i].addr, size + 0x2000u);
         for (i = 0; i < v->map.n_zimg; i++) ff_mark(&v->map, v->map.zimg[i], size + 0x2000u);
-        ff_mark(&v->map, t[2], t[3]);
-        ff_mark(&v->map, t[4], 0x1000u);
+        ff_mark(&v->map, t[2] & 0x00FFFFFFu, t[3]);   /* (a boot address may carry a cartridge-domain bit: the RSP takes 24) */
+        ff_mark(&v->map, t[4], 0x1800u);          /* the code and its overlays */
         ff_mark(&v->map, v->data_src, 0x1000u);
         ff_mark(&v->map, t[8], t[9]);
         ff_mark(&v->map, t[10], (t[11] > t[10]) ? (t[11] - t[10]) : t[11]);   /* the output buffer: an end or a size */
@@ -434,6 +561,25 @@ static uint32_t view_run(void) {
         ff_mark(&v->map, mem.deny_lo, mem.deny_hi - mem.deny_lo);
         v->spare = ff_spare(&v->map, size, mem.limit);
         if (v->spare) b = v->spare;
+        /* The list's own buffer inside the hook's home (borrowed: the region the game keeps
+         * under the hook; resident: the top of RAM): the RDP's writes there land on the hook
+         * (Pokemon Stadium 2 keeps its 640x480 buffer up to the top of RAM: the view drew over
+         * the hook and the console froze). The frame goes into two spare buffers instead, the
+         * origin's line offset carried over; with no room for both, the view declines. A depth
+         * image there declines as well (the game's list names it, no spare stands in). */
+        if ((a < mem.deny_hi) && ((a + size) > mem.deny_lo)) {
+            uint32_t s2 = 0;
+            if (!v->spare) VIEW_DECLINE(5u);
+            ff_mark(&v->map, v->spare, size);
+            s2 = ff_spare(&v->map, size, mem.limit);
+            if (!s2) VIEW_DECLINE(6u);
+            if ((o >= a) && (o < a + size)) off = o - a;
+            a = v->spare;
+            b = s2;
+        }
+        for (i = 0; i < v->map.n_zimg; i++) {
+            if ((v->map.zimg[i] < mem.deny_hi) && ((v->map.zimg[i] + size) > mem.deny_lo)) VIEW_DECLINE(7u);
+        }
         if ((o >= a) && (o < a + size)) off = o - a;
         if (!line || (off % line) || (off > 8u * line)) off = 0;
         v->line_off = off;

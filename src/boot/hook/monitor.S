@@ -147,6 +147,100 @@
 .macro DEVFPS
 .endm
 
+# The last three frame buffers the VI showed, in the cart buffer (+0xEE0 the latest, +0xEE4
+# and +0xEE8 the ones before, +0xEEC 'VIH1' once written; hook.c VIHIST_BRAM): the panel
+# shows and draws on a whole buffer of the game's when the one on screen reaches into the
+# hook's home (Pokemon Stadium 2's 640x480 buffer runs to the top of RAM: the hook's own
+# bytes showed at its bottom, or not, by which buffer the swap left on screen). One buffer
+# read a tick; four cart writes a swap (mon_vihist_swap, some 40 us, the PI idle by the gate).
+.macro VIHIST
+    lui     $a2, 0xA440
+    lw      $a2, 0x0004($a2)            # VI_ORIGIN
+    lui     $a3, 0xBFFE
+    lw      $v0, 0x0EE0($a3)
+    beq     $a2, $v0, 8f
+    nop
+    jal     mon_vihist_swap
+    nop
+8:
+.endm
+
+# (diagnostic builds, AI_DIAG=1: build.sh --defsym AIDIAG=1) the audio interface sampled at every
+# VI tick into the cart buffer, as the resident hook's probe does (hook.c AI_DIAG): +0x1400 +
+# 4 * (ticks & 127) = AI_STATUS's full and busy bits (31, 30), the AI's interrupt line (29),
+# AI_LEN (0..17); +0x1600 = the tick count. Two cart writes a tick.
+.ifndef AIDIAG
+.set AIDIAG, 0
+.endif
+.macro AIDIAGM
+.if AIDIAG
+    lui     $a2, 0xA450
+    lw      $a3, 0x000C($a2)            # AI_STATUS
+    lw      $v0, 0x0004($a2)            # AI_LEN
+    lui     $a2, 0xC000
+    and     $a3, $a3, $a2
+    lui     $a2, 0x0003
+    ori     $a2, $a2, 0xFFFF
+    and     $v0, $v0, $a2
+    or      $a1, $a3, $v0
+    lui     $a2, 0xA430
+    lw      $a2, 0x0008($a2)            # MI_INTR
+    andi    $a2, $a2, 0x0004            # the AI's line
+    beqz    $a2, 8f
+    nop
+    lui     $a2, 0x2000
+    or      $a1, $a1, $a2
+8:  lw      $a0, D_TICKS($k0)
+    andi    $a0, $a0, 0x007F
+    sll     $a0, $a0, 2
+    lui     $a2, 0xBFFE
+    addu    $a0, $a0, $a2
+    addiu   $a0, $a0, 0x1400
+    CALL    LP_PIO_W
+    lui     $k0, 0x8000
+    lw      $a1, D_TICKS($k0)
+    lui     $a0, 0xBFFE
+    addiu   $a0, $a0, 0x1600
+    CALL    LP_PIO_W
+    lui     $k0, 0x8000
+.ifdef CARD_STASH
+    # (the cutscene probe) a second ring at +0x1800, a word a tick: the RCP lines up now [31:26],
+    # the panel counter's state [25:24] (0 idle or counting, 1 armed, 2 fired) and low bits
+    # [19:16], the moment's reason now [23:20] (mt_why: 0 clean), the buttons last taken [15:0]
+    addiu   $a3, $zero, 1
+    jal     mt_why
+    nop
+    lui     $k0, 0x8000
+    lui     $a2, 0xA430
+    lw      $a2, 0x0008($a2)
+    andi    $a2, $a2, 0x003F
+    sll     $a1, $a2, 26
+    lw      $a2, D_HOLD_M($k0)
+    srl     $a3, $a2, 16
+    andi    $a3, $a3, 3
+    sll     $a3, $a3, 24
+    or      $a1, $a1, $a3
+    andi    $a3, $a2, 0x000F
+    sll     $a3, $a3, 16
+    or      $a1, $a1, $a3
+    andi    $a3, $t2, 0x000F
+    sll     $a3, $a3, 20
+    or      $a1, $a1, $a3
+    lw      $a2, D_PAD($k0)
+    andi    $a2, $a2, 0xFFFF
+    or      $a1, $a1, $a2
+    lw      $a0, D_TICKS($k0)
+    andi    $a0, $a0, 0x007F
+    sll     $a0, $a0, 2
+    lui     $a2, 0xBFFE
+    addu    $a0, $a0, $a2
+    addiu   $a0, $a0, 0x1800
+    CALL    LP_PIO_W
+    lui     $k0, 0x8000
+.endif
+.endif
+.endm
+
 .section .text, "ax"
 
 # ---- +0: the epilogue -------------------------------------------------------------
@@ -158,6 +252,10 @@ mon_epilogue:
     SAVE_REGS
     jal     mon_cache_flush             # the hook's dirty lines out, every line dropped
     nop
+.ifdef CARD_STASH
+    jal     mon_cb_stash_in             # the region back from its file on the card
+    nop
+.else
     lui     $a0, 0x007D                 # RDRAM 0x007D0000
     lui     $a1, %hi(STASH_PI)
     addiu   $a1, $a1, %lo(STASH_PI)
@@ -165,6 +263,7 @@ mon_epilogue:
     ori     $a2, $a2, 0xFFFF            # 128 KiB - 1
     addiu   $a3, $zero, 0x0C            # cart -> RDRAM (PI_WR_LEN)
     CALL    LP_DMA
+.endif
     lui     $k0, 0x8000
     lw      $t1, D_PIDRAM($k0)          # the game's PI_DRAM_ADDR back (PI_CART_ADDR: the exit stub)
     lui     $t0, 0xA460
@@ -182,6 +281,12 @@ mon_epilogue:
     lw      $t1, %lo(CTX_KSEG1 + CTX_CLOCK + 4)($t0)   # physics ran on every frame the game was held)
     mtc0    $t1, $11
     LOAD_REGS
+.ifdef CARD_STASH
+    lui     $k0, %hi(CTX_KSEG1 + CTX_CLOCK + 0x18)
+    lw      $k1, %lo(CTX_KSEG1 + CTX_CLOCK + 0x18)($k0)   # the moment's PI line (mt_trigger)
+    bnez    $k1, mon_pi_owed_exit       # a transfer's end the world has not taken: raised again
+    nop
+.endif
     TO_GAME
 
 # a combo: mask in a0, hold count in a1, buttons in t3; the counter restarts when the
@@ -203,9 +308,21 @@ mon_epilogue:
     b       2f                          # mt_armed takes the first clean entry
     nop
 1:  lw      $a3, \hold($k0)
+.ifdef CARD_STASH
+    andi    $a2, $a3, 0x4000            # bit 14: armed by the PC (or kept, below), not by these buttons
+    bnez    $a2, 2f
+    srl     $a2, $a3, 16                # (delay slot)
+    addiu   $a2, $a2, -1
+    bnez    $a2, combo_rel\@           # counting toward the hold, or fired: released, it goes
+    ori     $a3, $a3, 0x4000            # (delay slot)
+    b       2f                          # armed and released: kept the PC's way, a tap arms it (mt_armed
+    sw      $a3, \hold($k0)             # counts its ticks, drops it at 120: a streamed scene's moments are sparse)
+combo_rel\@:
+.else
     andi    $a3, $a3, 0x4000            # bit 14: armed by the PC, not by these buttons
     bnez    $a3, 2f
     nop
+.endif
     sw      $zero, \hold($k0)
 2:
 .endm
@@ -406,6 +523,29 @@ mt_vi:
     # hook counts them (a backstop: Zelda showed two thousand entries a second before)
     lui     $t0, 0xA430
     lw      $t0, 0x0008($t0)
+.ifdef CARD_STASH
+    # A cartridge transfer's end (the PI line) is a tick too when a whole frame has passed
+    # since the last one: the gate (lowpage.S) lets no entry in while the PI is busy, and a
+    # game streaming from the cartridge (Conker's intro, Stadium 2's battle demo) keeps it
+    # busy at most VI instants; the transfers' ends are the instants the bus is free. Every
+    # tick marks D_LASTVI's bit 0: mt_armed's t3 (the entry took a tick) reads it once.
+    andi    $t1, $t0, 0x0008
+    lui     $t2, 0x0005
+    bnez    $t1, mt_vi_tick             # the VI's own: half a frame since the last tick
+    ori     $t2, $t2, 0xF370            # (delay slot) 390,000 Count ticks
+    andi    $t1, $t0, 0x0010
+    beqz    $t1, mt_armed               # neither: an RSP/RDP-done entry for an armed borrow
+    lui     $t2, 0x000B                 # (delay slot)
+    ori     $t2, $t2, 0xE6E0            # a transfer's end: a whole frame, 780,000
+mt_vi_tick:
+    mfc0    $t0, $9
+    lw      $t1, D_LASTVI($k0)
+    subu    $t1, $t0, $t1
+    sltu    $t1, $t1, $t2
+    bnez    $t1, mt_armed
+    ori     $t0, $t0, 1                 # (delay slot) the tick's mark (t0 is dead on the way to mt_armed)
+    sw      $t0, D_LASTVI($k0)
+.else
     andi    $t0, $t0, 0x0008
     beqz    $t0, mt_armed               # not the VI's: an RSP/RDP-done entry for an armed borrow
     mfc0    $t0, $9
@@ -417,10 +557,25 @@ mt_vi:
     bnez    $t1, mt_armed
     nop
     sw      $t0, D_LASTVI($k0)
+.endif
+    # the reset button (Cause IP4, the console's pre-reset interrupt: the reset follows half a
+    # second later): hands off, as the resident hook is, and 'RSET' at the data buffer's +0x1EFC
+    # for the menu, which reads and clears it at its start. Its Reset Button setting may start
+    # the game again after it; a power-on leaves no word
+    mfc0    $t0, $13
+    andi    $t0, $t0, 0x1000
+    beqz    $t0, mt_noreset
+    nop
+    PIOW    0xBFFE1EFC, 0x52534554      # 'RSET'
+    b       mt_out
+    nop
+mt_noreset:
     lw      $t0, D_TICKS($k0)
     addiu   $t0, $t0, 1
     sw      $t0, D_TICKS($k0)
     DEVFPS
+    VIHIST                              # the frame-buffer history (the panel's other buffer)
+    AIDIAGM                             # (diagnostic builds) the audio interface, every tick
     # the buttons from the block of the last completed transfer, at every tick as well:
     # a libdragon game serves most of its controller transfers with interrupts off and
     # no SI exception at all (its synchronous joybus path polls the SI and acknowledges
@@ -431,7 +586,12 @@ mt_vi:
     lw      $t0, D_SIAGE($k0)
     addiu   $t0, $t0, 1
     sw      $t0, D_SIAGE($k0)
+.ifdef CARD_STASH
+    sltiu   $t1, $t0, 16                # card-direct: 16 ticks (Conker's intro polls every fifth frame:
+                                        # the cleared block read as a release, the hotkey's count restarted)
+.else
     sltiu   $t1, $t0, 4
+.endif
     bnez    $t1, 8f
     nop
     lui     $t1, 0xA480
@@ -645,9 +805,36 @@ mt_out:
 # entries.
 mt_armed:
     lui     $k0, 0x8000
+.if AIDIAG
+.ifdef CARD_STASH
+    # (the cutscene probe) entries: +0x1604 every kind, +0x1608 those with the PI line up
+    lui     $a2, 0xA430
+    lw      $a2, 0x0008($a2)            # (a2 survives LP_PIO_W)
+    lui     $a0, 0xBFFE
+    lw      $a1, 0x1604($a0)
+    addiu   $a1, $a1, 1
+    addiu   $a0, $a0, 0x1604
+    CALL    LP_PIO_W
+    andi    $a2, $a2, 0x0010
+    beqz    $a2, mt_armed_go
+    lui     $a0, 0xBFFE                 # (delay slot)
+    lw      $a1, 0x1608($a0)
+    addiu   $a1, $a1, 1
+    addiu   $a0, $a0, 0x1608
+    CALL    LP_PIO_W
+mt_armed_go:
+    lui     $k0, 0x8000
+.endif
+.endif
     lui     $t0, 0xA430
     lw      $t0, 0x0008($t0)
-    andi    $t3, $t0, 0x0008            # t3: entered on the VI?
+    andi    $t3, $t0, 0x0008            # t3: entered on the VI? (the first 30 ticks armed: frame boundaries only)
+.ifdef CARD_STASH
+    lw      $t0, D_LASTVI($k0)
+    andi    $a1, $t0, 1                 # a1: this entry took a tick (mt_vi's mark: the VI's own, or a
+    xor     $t0, $t0, $a1               # transfer's end standing in for it; read once): the PC's
+    sw      $t0, D_LASTVI($k0)          # counters count those, a streamed scene's too
+.endif
     addiu   $v0, $zero, 1               # the action: 1 save (D_HOLD_S), 2 load (+4), 3 panel (+8)
 1:  sll     $a2, $v0, 2
     addiu   $a2, $a2, D_HOLD_S - 4      # the counter's offset
@@ -659,7 +846,11 @@ mt_armed:
     andi    $t2, $t1, 0x4000            # the PC's: nobody holds buttons to count its ticks,
     beqz    $t2, 5f                     # so the VI entries count them here
     nop
+.ifdef CARD_STASH
+    beqz    $a1, 5f                     # (the ticks taken: a transfer's end stands in for a VI kept out)
+.else
     beqz    $t3, 5f
+.endif
     nop
     addiu   $t1, $t1, 1
     sw      $t1, 0($t0)
@@ -700,6 +891,12 @@ mt_why:
     addiu   $t1, $zero, 0x0001
     beq     $t0, $t1, 1f                # the RSP done, alone (the hook re-raises it on load)
     addiu   $t1, $zero, 0x0020
+.ifdef CARD_STASH
+    beq     $t0, $t1, 1f                # the RDP done alone
+    addiu   $t1, $zero, 0x0010          # (delay slot)
+    beq     $t0, $t1, 1f                # a cartridge transfer's end alone, or with the VI (0x18, the bne
+    addiu   $t1, $zero, 0x0018          # below): the exits raise its line again (mon_pi_owed_exit)
+.endif
     bne     $t0, $t1, 9f                # 1: some other mix of RCP interrupts pending (the RDP
     nop                                 #    done alone passes too)
 1:  addiu   $t2, $zero, 2
@@ -741,6 +938,12 @@ mt_why:
     lw      $t0, D_DEFER($t0)
     bnez    $t0, 9f                     # 7: a pak block deferred (hook.c pak_stub_place): its thread
     nop                                 #    waits for the read mt_defer runs again; no state of that
+    addiu   $t2, $zero, 8
+    lui     $t0, 0xA460
+    lw      $t1, 0x0010($t0)            # PI_STATUS
+    andi    $t1, $t1, 0x0003            # a DMA or an IO access of the game's still running: it would end
+    bnez    $t1, 9f                     # 8: during the borrow, its completion lost to the saved world (a
+    nop                                 #    guard: the gate, lowpage.S, admits no entry with the PI busy)
     move    $t2, $zero
 9:  jr      $ra
     nop
@@ -871,9 +1074,46 @@ mt_trig_res:
     lui     $a0, %hi(CTX_KSEG1 + CTX_CLOCK + 4)
     addiu   $a0, $a0, %lo(CTX_KSEG1 + CTX_CLOCK + 4)
     CALL    LP_PIO_W
+    # the audio interface as the game left it (its full and busy bits, the remaining length of
+    # the DMA playing, a valid bit), to CTX+0x234: the hook's entry comes after the stash and
+    # its own transfer, by when a small DMA has drained (hook.c AI_REPLAY reads it there)
+    lui     $a2, 0xA450
+    lw      $a1, 0x000C($a2)            # AI_STATUS
+    lw      $a3, 0x0004($a2)            # AI_LEN
+    lui     $a2, 0xC000
+    and     $a1, $a1, $a2
+    lui     $a2, 0x0003
+    ori     $a2, $a2, 0xFFFF
+    and     $a3, $a3, $a2
+    or      $a1, $a1, $a3
+    lui     $a2, 0x2000
+    or      $a1, $a1, $a2
+    lui     $a0, %hi(CTX_KSEG1 + CTX_CLOCK + 0x14)
+    addiu   $a0, $a0, %lo(CTX_KSEG1 + CTX_CLOCK + 0x14)
+    CALL    LP_PIO_W
+.ifdef CARD_STASH
+    jal     mon_airate                  # and its rate, timed from the DMA playing (CTX+0x23C/+0x240)
+    nop
+    # the PI line as the moment has it, where the game listens for it (MI_MASK): a transfer's end
+    # the world has not taken (mt_why admits it), to CTX+0x238. The borrow's transfers clear it,
+    # and the exits raise it again from this word (mon_pi_owed_exit; a load's exit finds the
+    # loaded state's own there, hook.c borrow_load_exit). No transfer has run since the moment.
+    lui     $a2, 0xA430
+    lw      $a1, 0x0008($a2)            # MI_INTR
+    lw      $a2, 0x000C($a2)            # MI_MASK
+    and     $a1, $a1, $a2
+    andi    $a1, $a1, 0x0010
+    lui     $a0, %hi(CTX_KSEG1 + CTX_CLOCK + 0x18)
+    addiu   $a0, $a0, %lo(CTX_KSEG1 + CTX_CLOCK + 0x18)
+    CALL    LP_PIO_W
+.endif
     # the game's dirty cache lines out, then its region to the stash
     jal     mon_cache_flush
     nop
+.ifdef CARD_STASH
+    jal     mon_cb_stash_out            # the region to its file on the card
+    nop
+.else
     lui     $a0, 0x007D
     lui     $a1, %hi(STASH_PI)
     addiu   $a1, $a1, %lo(STASH_PI)
@@ -881,6 +1121,7 @@ mt_trig_res:
     ori     $a2, $a2, 0xFFFF
     addiu   $a3, $zero, 0x08            # RDRAM -> cart (PI_RD_LEN)
     CALL    LP_DMA
+.endif
     # ROM writes off again (the hook turns them on when it needs them)
     jal     mon_cfg_rw
     move    $a2, $zero
@@ -897,6 +1138,121 @@ mt_trig_res:
     lui     $k0, 0x807D
     jr      $k0
     nop
+
+.ifdef CARD_STASH
+# ---- the card-direct mode's stash: the hook's home to a file on the card -----------------
+# A 64 MiB ROM leaves no SDRAM for the stash: the 128 KiB under the hook go to a file on the
+# card (STASH_SEC: the kseg1 address of the word in the flash tables holding the file's first
+# sector; the menu makes the file one contiguous run) through the 4 KiB window in the data
+# buffer, 8 sectors a command, and come back the same way. The cart's SD commands are its
+# register writes through LP_PIO_W and a poll of the busy bit, as mon_cfg_rw does; the
+# window's transfers are LP_DMA's. About 100 ms each way. Uses t0-t3, a0-a3, v0 (the
+# caller's ra parked in v0; the routines are entered after the clock went to the context,
+# when t3 and v0 are free). CB_FLAGS (a data buffer word the menu zeroes at launch): bit 0,
+# the card initialised by this side of the cart.
+.set CB_WIN_PI,  0x1FFE1000
+.set CB_FLAGS,   0xBFFE0EC0
+mon_cb_wait:                            # the command done (SR bit 31 clear), at most a few seconds
+    lui     $t1, 0x0080
+1:  lui     $t0, 0xBFFF
+    lw      $t0, 0($t0)
+    bgez    $t0, 2f
+    addiu   $t1, $t1, -1
+    bnez    $t1, 1b
+    nop
+2:  jr      $ra
+    nop
+mon_cb_init:                            # the card once, then the position at the file's first sector
+    move    $a3, $ra
+    lui     $t0, %hi(CB_FLAGS)
+    lw      $t1, %lo(CB_FLAGS)($t0)
+    andi    $t1, $t1, 1
+    bnez    $t1, 1f
+    nop
+    PIOW    0xBFFF0004, 0x00000000
+    PIOW    0xBFFF0008, 0x00000001      # SD_CARD_OP: init
+    PIOW    0xBFFF0000, 0x00000069      # 'i'
+    jal     mon_cb_wait
+    nop
+    PIOW    CB_FLAGS, 0x00000001
+1:  lui     $t0, %hi(STASH_SEC)
+    lw      $a1, %lo(STASH_SEC)($t0)    # the stash file's first sector (the flash tables)
+    lui     $a0, 0xBFFF
+    addiu   $a0, $a0, 0x0004
+    CALL    LP_PIO_W                    # DATA0: the sector
+    PIOW    0xBFFF0008, 0x00000000
+    PIOW    0xBFFF0000, 0x00000049      # 'I': SD_SECTOR_SET (the position advances with each transfer)
+    jal     mon_cb_wait
+    nop
+    jr      $a3
+    nop
+# mon_pi_owed_exit: the way back to the game when the moment held a cartridge transfer's end
+# the world has not taken (the PI line up where the game listens: mt_why admits it, CTX+0x238
+# says so). Every transfer of the borrow ended with that line cleared; a one-byte transfer from
+# the ROM's first byte into D_DIAG0 (a spill word, dead between borrows) raises it again, and
+# the game's handler takes it as its own transfer's end. The transfer starts in the delay slot
+# of the jump to the game's handler (RAM, GAME_TAIL): no cart fetch runs under it (one freezes
+# the console). The world's PI address registers are not put back: at such a moment the game's
+# transfer had ended and no other was being set up (the PI was busy until then), and the
+# handler does not read them. k0/k1 only: the world's registers are in place, EXL set.
+mon_pi_owed_exit:
+    lui     $k1, 0xA460
+    addiu   $k0, $zero, D_DIAG0
+    sw      $k0, 0x0000($k1)            # PI_DRAM_ADDR: RDRAM 0x1A8
+    lui     $k0, 0x1000
+    sw      $k0, 0x0004($k1)            # PI_CART_ADDR: the ROM's first byte
+    lui     $k0, 0x8000
+    ori     $k0, $k0, 0x0120            # the game's handler (GAME_TAIL, lowpage.S; both layouts)
+    jr      $k0
+    sw      $zero, 0x000C($k1)          # (delay slot) PI_WR_LEN = 0: one byte, the transfer starts
+
+mon_cb_stash_out:                       # RDRAM 0x7D0000..0x7EFFFF -> the file
+    move    $v0, $ra
+    jal     mon_cb_init
+    nop
+    move    $t3, $zero
+1:  lui     $a0, 0x007D
+    addu    $a0, $a0, $t3
+    lui     $a1, %hi(CB_WIN_PI)
+    addiu   $a1, $a1, %lo(CB_WIN_PI)
+    addiu   $a2, $zero, 0x0FFF          # 4 KiB - 1
+    addiu   $a3, $zero, 0x08            # RDRAM -> cart (PI_RD_LEN): into the window
+    CALL    LP_DMA
+    PIOW    0xBFFF0004, CB_WIN_PI
+    PIOW    0xBFFF0008, 0x00000008      # 8 sectors
+    PIOW    0xBFFF0000, 0x00000053      # 'S': SD_WRITE from the window
+    jal     mon_cb_wait
+    nop
+    addiu   $t3, $t3, 0x1000
+    lui     $t0, 0x0002
+    bne     $t3, $t0, 1b
+    nop
+    jr      $v0
+    nop
+mon_cb_stash_in:                        # the file -> RDRAM 0x7D0000..0x7EFFFF
+    move    $v0, $ra
+    jal     mon_cb_init
+    nop
+    move    $t3, $zero
+1:  PIOW    0xBFFF0004, CB_WIN_PI
+    PIOW    0xBFFF0008, 0x00000008
+    PIOW    0xBFFF0000, 0x00000073      # 's': SD_READ into the window
+    jal     mon_cb_wait
+    nop
+    lui     $a0, 0x007D
+    addu    $a0, $a0, $t3
+    lui     $a1, %hi(CB_WIN_PI)
+    addiu   $a1, $a1, %lo(CB_WIN_PI)
+    addiu   $a2, $zero, 0x0FFF
+    addiu   $a3, $zero, 0x0C            # cart -> RDRAM (PI_WR_LEN): from the window
+    CALL    LP_DMA
+    addiu   $t3, $t3, 0x1000
+    lui     $t0, 0x0002
+    bne     $t3, $t0, 1b
+    nop
+    jr      $v0
+    nop
+.endif
 
 # ---- MON+0x1000: the virtual Controller Pak, served from the cart ----------------------
 # The resident hook answers channel 0's accessory commands from a RAM copy of the pak
@@ -1417,6 +1773,10 @@ mp_crc_tab:
 mon_epi_load:
     jal     mon_cache_flush             # the hook's dirty lines out, every line dropped
     nop
+.ifdef CARD_STASH
+    jal     mon_cb_stash_in             # the loaded world's region from its file on the card
+    nop
+.else
     lui     $a0, 0x007D
     lui     $a1, %hi(STASH_PI)
     addiu   $a1, $a1, %lo(STASH_PI)
@@ -1424,6 +1784,7 @@ mon_epi_load:
     ori     $a2, $a2, 0xFFFF
     addiu   $a3, $zero, 0x0C            # cart -> RDRAM (PI_WR_LEN): the loaded world's region
     CALL    LP_DMA
+.endif
     lui     $k0, 0x8000
     lw      $t1, D_PIDRAM($k0)          # the loaded world's PI_DRAM_ADDR (the hook put it here)
     lui     $t0, 0xA460
@@ -1444,7 +1805,8 @@ mon_epi_load:
     addiu   $t1, $zero, -1
     sw      $t1, D_RESUMED($k0)         # a suspended state is loaded once: no try after a load
     # the silence the hook found in the loaded world (CTX+0x228: its RDRAM address, +0x22C: the
-    # length, bit 31 = queue it twice): the game's audio driver then finds the AI busy at its
+    # length, bit 31 = a second one behind it, of the length at +0x230: the moment's FIFO replayed,
+    # hook.c AI_REPLAY): the game's audio driver then finds the AI busy at its
     # first check after the resume, whenever that comes, and keeps its lead (GoldenEye otherwise
     # settled into queueing each buffer only after the previous one ended: a gap of a few hundred
     # microseconds every frame, for good)
@@ -1454,14 +1816,20 @@ mon_epi_load:
     lw      $t2, 0x022C($k0)
     beqz    $t1, 2f
     lui     $t0, 0xA450
+    lw      $t3, 0x000C($t0)            # AI_STATUS: full (two queued) takes nothing; behind one
+    bltz    $t3, 2f                     # still playing it queues (Pokemon Stadium 2's battle demo
+    nop                                 # streams big buffers, one was still going at the hook's check)
     sw      $t1, 0x0000($t0)            # AI_DRAM_ADDR
     sll     $t3, $t2, 1
-    srl     $t3, $t3, 1                 # the length without bit 31
+    srl     $t3, $t3, 1                 # the first length without bit 31
     sw      $t3, 0x0004($t0)            # AI_LEN: the DMA starts
-    bgez    $t2, 2f
+    bgez    $t2, 2f                     # bit 31: a second one behind it
+    lw      $t2, 0x0230($k0)            # (delay slot) its length
+    lw      $t3, 0x000C($t0)            # AI_STATUS: full already (one of the old world's still
+    bltz    $t3, 2f                     # playing ahead of ours) takes no second
     nop
     sw      $t1, 0x0000($t0)            # once more, pending behind the first
-    sw      $t3, 0x0004($t0)
+    sw      $t2, 0x0004($t0)
 2:
     # the context, as state_resume would load it
     lui     $k0, %hi(CTX_KSEG1)
@@ -1510,6 +1878,11 @@ mon_epi_load:
     .irp i,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,28,29,30,31
     LD64    $\i, (8 * \i), $k1
     .endr
+.ifdef CARD_STASH
+    lw      $k1, (CTX_CLOCK + 0x18)($k0)   # the loaded moment's PI line (hook.c borrow_load_exit: RR_PI)
+    bnez    $k1, mon_pi_owed_exit       # raised again, through the game's handler (EXL is still set)
+    nop
+.endif
     lui     $k0, %hi(LP_EXIT_ERET)
     addiu   $k0, $k0, %lo(LP_EXIT_ERET) # RAM: PI_CART_ADDR back, then eret
     jr      $k0
@@ -1588,8 +1961,183 @@ mon_cache_flush:
 # steady state), and the gate runs for this exception. Clobbers k0/k1 only;
 # t0/t1 are parked in the vector page's scratch. (The ExcCode test below is kept as a
 # backstop.)
+# VIHIST's swap: a2 = the new VI_ORIGIN. The two older origins move down, the new one goes in
+# first, the magic once. ra spilled to D_DIAG0 (mp_serve's spill too; neither runs inside the other).
+# Clobbers t0-t2, a0, a1, a3, v0, k0, k1; a2 survives LP_PIO_W.
+.global mon_vihist_swap
+mon_vihist_swap:
+    sw      $ra, D_DIAG0($k0)
+    lui     $a3, 0xBFFE
+    lw      $a1, 0x0EE4($a3)
+    lui     $a0, 0xBFFE
+    addiu   $a0, $a0, 0x0EE8
+    CALL    LP_PIO_W                    # +0xEE8 <- the one before last
+    lui     $a3, 0xBFFE
+    lw      $a1, 0x0EE0($a3)
+    lui     $a0, 0xBFFE
+    addiu   $a0, $a0, 0x0EE4
+    CALL    LP_PIO_W                    # +0xEE4 <- the last
+    move    $a1, $a2
+    lui     $a0, 0xBFFE
+    addiu   $a0, $a0, 0x0EE0
+    CALL    LP_PIO_W                    # +0xEE0 <- the one on screen now
+    lui     $a3, 0xBFFE
+    lw      $v0, 0x0EEC($a3)
+    lui     $a1, 0x5649
+    ori     $a1, $a1, 0x4831            # 'VIH1'
+    beq     $v0, $a1, 9f
+    nop
+    lui     $a0, 0xBFFE
+    addiu   $a0, $a0, 0x0EEC
+    CALL    LP_PIO_W                    # the magic, once per boot
+9:  lui     $k0, 0x8000
+    lw      $ra, D_DIAG0($k0)
+    jr      $ra
+    nop
+
+
+.ifdef CARD_STASH
+# (card-direct) the audio interface's rate at a borrow's first instant, timed from the DMA
+# playing. AI_DACRATE is write-only, so a state cannot read it back, and a game sets it per
+# scene (Pokemon Stadium 2's menus play at 32 kHz, its battles slower: a battle state loaded
+# over a menu kept the menu's rate, the music fast with a gap at every frame). From AI_LEN's
+# first step (8 bytes a step, paced by the DAC) to the DMA's last fetch (AI_LEN 0, or a jump
+# up to the DMA queued behind it), or to the last step within 8 ms: the bytes to CTX+0x23C,
+# the Count ticks to +0x240 (both 0: idle, or no step within ~0.5 ms). hook.c ai_rate_word
+# turns them into the divider for the state (rcp[4]); a load sets it again. Called with jal
+# from the borrow's start, before the stash; uses t0-t3, a0-a3, v0 and ra.
+.global mon_airate
+mon_airate:
+    move    $t3, $ra                    # the return (the calls below take ra; t3 survives them)
+    move    $v0, $zero                  # the bytes (0: not timed)
+    move    $a3, $zero                  # the ticks
+    lui     $a2, 0xA450
+    lw      $t0, 0x000C($a2)            # AI_STATUS
+    lui     $t1, 0x4000
+    and     $t0, $t0, $t1
+    beqz    $t0, 8f                     # not busy: nothing playing to time
+    lw      $a0, 0x0004($a2)            # (delay slot) AI_LEN now
+    addiu   $t2, $zero, 64              # its first step within 64 reads (~0.5 ms)
+1:  lw      $t0, 0x0004($a2)
+    bne     $t0, $a0, 2f
+    addiu   $t2, $t2, -1                # (delay slot)
+    bnez    $t2, 1b
+    nop
+    b       8f                          # no step: not timed
+    nop
+2:  mfc0    $t1, $9                     # the first step's time
+    move    $a0, $t0                    # the bytes from here
+    move    $a1, $t0                    # the last value seen
+    move    $a3, $t1                    # the last step's time
+3:  lw      $t0, 0x0004($a2)            # AI_LEN
+    mfc0    $t2, $9                     # its time
+    beq     $t0, $a1, 5f                # no step
+    nop
+    beqz    $t0, 6f                     # the DMA's last fetch
+    sltu    $v0, $a1, $t0               # (delay slot)
+    bnez    $v0, 6f                     # a jump up: the DMA queued behind it took over
+    nop
+    move    $a1, $t0                    # a step
+    move    $a3, $t2
+5:  subu    $v0, $t2, $t1
+    srl     $v0, $v0, 12
+    sltiu   $v0, $v0, 91                # within 8 ms (91 << 12 ticks)
+    bnez    $v0, 3b
+    nop
+    subu    $v0, $a0, $a1               # 8 ms: the bytes to the last step
+    b       8f
+    subu    $a3, $a3, $t1               # (delay slot) and its time
+6:  move    $v0, $a0                    # the end: all of them
+    subu    $a3, $t2, $t1               # by this read
+8:  move    $a1, $v0
+    lui     $a0, %hi(CTX_KSEG1 + CTX_CLOCK + 0x1C)
+    addiu   $a0, $a0, %lo(CTX_KSEG1 + CTX_CLOCK + 0x1C)
+    CALL    LP_PIO_W
+    move    $a1, $a3
+    lui     $a0, %hi(CTX_KSEG1 + CTX_CLOCK + 0x20)
+    addiu   $a0, $a0, %lo(CTX_KSEG1 + CTX_CLOCK + 0x20)
+    CALL    LP_PIO_W
+    jr      $t3
+    nop
+.endif
 
 .section .text.install, "ax"
+.ifdef LP_ALT
+# The alternate layout's installer (lowpage.S SC64SS_LP_ALT, build.sh LP_ALT): reached from
+# the front at 0x3C0 whenever the gate's first word is gone (at boot, and after a game's
+# clear of the page), the PI idle. Puts every fragment back from the copies below: the
+# exits (0x0F0, 0x110), the helper (0x130), EXIT (0x1DC) and the gate (0x200), each word
+# stored, written back and its instruction line invalidated (the game's clear went
+# through the cache: its dirty zero lines are what these stores update). The engine's
+# tail is not rewritten (it lands in the front for good). Then the gate, for this
+# exception. Clobbers k0/k1; t0-t3 parked in the vector page's scratch.
+.global mon_install
+mon_install:
+    mfc0    $k1, $13                    # Cause
+    andi    $k1, $k1, 0x007C            # ExcCode: 0 is an interrupt
+    bnez    $k1, 8f
+    lui     $k0, 0x8000
+    sd      $t0, (SCRATCH + 0x00)($k0)
+    sd      $t1, (SCRATCH + 0x08)($k0)
+    sd      $t2, (SCRATCH + 0x10)($k0)
+    sd      $t3, (SCRATCH + 0x18)($k0)
+    lui     $t2, %hi(mon_install_table)
+    addiu   $t2, $t2, %lo(mon_install_table)
+5:  lw      $k0, 0($t2)                 # the fragment's home (0: the end of the table)
+    beqz    $k0, 6f
+    lw      $t1, 4($t2)                 # its words
+    lw      $t0, 8($t2)                 # its copy in this monitor
+1:  lw      $k1, 0($t0)
+    addiu   $t0, $t0, 4
+    sw      $k1, 0($k0)
+    cache   0x19, 0($k0)                # Hit_Writeback_D
+    cache   0x10, 0($k0)                # Hit_Invalidate_I
+    addiu   $t1, $t1, -1
+    bnez    $t1, 1b
+    addiu   $k0, $k0, 4
+    b       5b
+    addiu   $t2, $t2, 12
+6:  lui     $k0, 0x8000
+    ld      $t0, (SCRATCH + 0x00)($k0)
+    ld      $t1, (SCRATCH + 0x08)($k0)
+    ld      $t2, (SCRATCH + 0x10)($k0)
+    ld      $t3, (SCRATCH + 0x18)($k0)
+    ori     $k0, $k0, 0x0200
+    jr      $k0                         # the gate, for this exception
+    nop
+8:  lui     $k0, 0x8000
+    ori     $k0, $k0, 0x0120
+    jr      $k0                         # not an interrupt: the game's vector words
+    nop
+.balign 16
+mon_install_table:                      # home, words, the copy
+    .word   0x800000F0, 4, mon_install_f0f0
+    .word   0x80000110, 4, mon_install_f110
+    .word   0x80000130, 20, mon_install_f130
+    .word   0x800001DC, 9, mon_install_exit
+    .word   0x80000200, 36, mon_install_gate
+    .word   0, 0, 0
+.balign 16
+mon_install_f0f0:
+    .incbin "lp64b_f0f0.bin"
+    .space  16
+.balign 16
+mon_install_f110:
+    .incbin "lp64b_f110.bin"
+    .space  16
+.balign 16
+mon_install_f130:
+    .incbin "lp64b_f130.bin"
+    .space  80
+.balign 16
+mon_install_exit:
+    .incbin "lp64b_fexit.bin"
+    .space  36
+.balign 16
+mon_install_gate:
+    .incbin "lp64b_f360.bin"           # the gate + DMA_PRIM linked for 0x200
+    .space  144
+.else
 .global mon_install
 mon_install:
     mfc0    $k1, $13                    # Cause
@@ -1642,9 +2190,18 @@ mon_install:
     nop
 .balign 16
 mon_install_gate:
+.ifdef CARD_STASH
+    .incbin "lp64_f360.bin"             # the 0x360 fragment (gate + lp_dma) linked for this monitor
+.else
     .incbin "lp_f360.bin"               # the 0x360 fragment (gate + lp_dma), 36 words
+.endif
     .space  144                         # (padding in case the fragment is shorter)
 .balign 16
 mon_install_exit:
+.ifdef CARD_STASH
+    .incbin "lp64_fexit.bin"
+.else
     .incbin "lp_fexit.bin"              # EXIT (lowpage.S), 8 words; 9 are copied
+.endif
     .space  36
+.endif                                  # LP_ALT

@@ -6,7 +6,7 @@
 
 #define SC64SS_HOOK_ADDRESS (0x807D0000UL)
 #define SC64SS_HOOK_DEV (0)
-#define SC64SS_HOOK_CFG_OFFSET (0x1B810UL)   /* struct hook_cfg inside the blob */
+#define SC64SS_HOOK_CFG_OFFSET (0x1BB40UL)   /* struct hook_cfg inside the blob */
 #define SC64SS_HOOK_CFG_MAGIC (0x43464731UL)
 #define SC64SS_HOOK_CFG_WORDS (48)
 
@@ -41,7 +41,56 @@
 #define SC64SS_SHOT_HDR_SECTORS (0x8UL)   /* the header block's sectors */
 #define SC64SS_SHOT_ENTRIES_MAX (0x1FCUL)   /* screenshots the header block can name */
 #define SC64SS_SD_MAGIC_SHOT (0x53484354UL)   /* a fresh screenshot file's marker 'SHFR' */
+#define SC64SS_SLOT_MAPS_PI (0x13F82000UL)   /* the card slots' sector maps (the menu writes them at launch) */
+#define SC64SS_SLOT_MAPS_LEN (0xE000UL)   /* its size */
+#define SC64SS_SLOT_INDEX_PI (0x13F91000UL)   /* the card slot index (the menu writes it at launch) */
+#define SC64SS_SLOT_SCRATCH_PI (0x13F92000UL)   /* a file's head for the panel (16 KiB) */
+#define SC64SS_CARD_SLOTS_MAX (0x100UL)   /* the most card slots a game lists */
+#define SC64SS_CD_STAGING_PI (0x14000000UL)   /* card-direct: the staging copy in the cart's flash (block 0) */
+#define SC64SS_CD_MAPS_PI (0x14020000UL)   /* card-direct: the slot maps in flash (block 1) */
+#define SC64SS_CD_SHOT_TABLE_PI (0x1402E000UL)   /* card-direct: the screenshot file's run table in flash */
+#define SC64SS_CD_INDEX_PI (0x1402F000UL)   /* card-direct: the initial slot index in flash */
+#define SC64SS_CD_SHOT_HDR_PI (0x14030000UL)   /* card-direct: the initial screenshot header in flash */
+#define SC64SS_CD_SCRATCH_TABLE_PI (0x14031000UL)   /* card-direct: the FreeCam scratch file's run table in flash */
+#define SC64SS_CD_SCRATCH_N (0xFFFFUL)   /* card-direct: the scratch file's marker slot number */
+#define SC64SS_CD_MONITOR_PI (0x14038000UL)   /* card-borrowed: the monitor's flash home (16 KiB) */
+#define SC64SS_CD_STASH_INFO_PI (0x14032000UL)   /* card-borrowed: 'STSH', the stash file's first sector, its sectors */
+#define SC64SS_CD_CTX_PI (0x1FFE0500UL)   /* card-borrowed: the load epilogue's context in the data buffer */
+#define SC64SS_CD_CFG_MIRROR_PI (0x1FFE0E00UL)   /* card-direct: the cfg mirror in the data buffer (192 bytes, the flags word after it) */
 #define SC64SS_HOOK_STAGING_LEN (0x20000UL)
+#define SC64SS_HOOK64_CFG_OFFSET (0x13750UL)   /* struct hook_cfg inside the card-direct blob */
+#define SC64SS_HOOK64_PRESENT (1)   /* 1: the card-direct blob was built into this menu */
+
+extern const uint32_t sc64ss_hook64_blob[];
+extern const uint32_t sc64ss_hook64_blob_size;
+#define SC64SS_HOOK64_CB_PRESENT (1)   /* 1: the card-borrowed monitor and fragments are in */
+extern const uint32_t sc64ss_monitor64_blob[];
+extern const uint32_t sc64ss_monitor64_blob_size;
+extern const uint32_t sc64ss_lowpage64_0f0[];
+extern const uint32_t sc64ss_lowpage64_0f0_words;
+extern const uint32_t sc64ss_lowpage64_110[];
+extern const uint32_t sc64ss_lowpage64_110_words;
+extern const uint32_t sc64ss_lowpage64_130[];
+extern const uint32_t sc64ss_lowpage64_130_words;
+extern const uint32_t sc64ss_lowpage64_1dc[];
+extern const uint32_t sc64ss_lowpage64_1dc_words;
+extern const uint32_t sc64ss_lowpage64_360[];
+extern const uint32_t sc64ss_lowpage64_360_words;
+#define SC64SS_HOOK64_ALT_PRESENT (1)   /* 1: the alternate vector-page layout (engine at 0x360, gate at 0x200) is in */
+extern const uint32_t sc64ss_monitor64b_blob[];
+extern const uint32_t sc64ss_monitor64b_blob_size;
+extern const uint32_t sc64ss_lowpage64b_0f0[];
+extern const uint32_t sc64ss_lowpage64b_0f0_words;
+extern const uint32_t sc64ss_lowpage64b_110[];
+extern const uint32_t sc64ss_lowpage64b_110_words;
+extern const uint32_t sc64ss_lowpage64b_130[];
+extern const uint32_t sc64ss_lowpage64b_130_words;
+extern const uint32_t sc64ss_lowpage64b_1dc[];
+extern const uint32_t sc64ss_lowpage64b_1dc_words;
+extern const uint32_t sc64ss_lowpage64b_200[];
+extern const uint32_t sc64ss_lowpage64b_200_words;
+extern const uint32_t sc64ss_lowpage64b_3c0[];
+extern const uint32_t sc64ss_lowpage64b_3c0_words;
 
 extern const uint32_t sc64ss_hook_blob[];
 extern const uint32_t sc64ss_hook_blob_size;

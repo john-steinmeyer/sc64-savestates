@@ -76,6 +76,12 @@ typedef struct {
     char *ss_key_shot;
     int ss_key_set_shot;
 
+    /** @brief SC64SS: the reset button starts the game that was running again, instead of the menu */
+    bool reset_restarts_rom;
+
+    /** @brief SC64SS: the game a reset starts again (noted at each launch while the above is on, taken away at every start) */
+    char *reset_rom_path;
+
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
     /** @brief Enable the ability to bypass the menu and instantly load a ROM on power and reset button */
     bool rom_autoload_enabled;

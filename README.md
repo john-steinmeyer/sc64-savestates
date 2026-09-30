@@ -14,15 +14,17 @@ information) in the report.
 hotkeys, the panel, swapping the Controller Pak mid-game and frame step, on the console. The
 [1.0 video](https://www.youtube.com/watch?v=yBQcb5c4tq0) shows a load, slow motion, suspend and resume.
 
-New in 1.9: FreeCam, a free camera on any saved moment, or on the game as it stands.
-C-right on a state in the panel (or FreeCam here on its Game page) and you fly through
-the frozen frame, the console redrawing it as you move; B and the game carries on.
-Also a fix for the faint stutter a load left in the sound of GoldenEye 007 and some
-other games, and the menu shows screenshots without the wait. 1.8 let the list of slots
-grow on the card as you use it and fixed Set ROM to autoload; 1.7 set hotkeys for
-every game at once; 1.6 fixed the vertical jitter with the virtual pak on; 1.5 the
-freeze after a load that 1.2 to 1.4 could hit; 1.4 brought ROM autoload back; 1.3 the
-pak transfers and the live port list. The [changelog](CHANGELOG.md) has the details.
+New in 2.0: save states for the 64 MB games, Conker's Bad Fur Day, Resident Evil 2 and
+Pokemon Stadium 2. They fill the cartridge's memory, so their states go straight to the
+SD card: a save takes about five seconds, a load about three. The menu also keeps up to
+256 favorites in the order you set and 50 games in History, and the reset button can
+restart the game you're playing instead of going to the menu. 1.9 brought FreeCam, a fix
+for the faint stutter a load left in the sound of GoldenEye 007 and some other games, and
+screenshots in the menu without the wait; 1.8 let the list of slots grow on the card as
+you use it and fixed Set ROM to autoload; 1.7 set hotkeys for every game at once; 1.6
+fixed the vertical jitter with the virtual pak on; 1.5 the freeze after a load that 1.2
+to 1.4 could hit; 1.4 brought ROM autoload back; 1.3 the pak transfers and the live port
+list. The [changelog](CHANGELOG.md) has the details.
 
 What it adds:
 
@@ -30,7 +32,7 @@ What it adds:
   R + Z + Start for a slot panel with thumbnails, as many slots as the card has room
   for. States persist on the SD card.
   Nothing stays resident in the console's memory, so games that use the whole
-  Expansion Pak work too.
+  Expansion Pak work too. The 64 MB games save straight to the card.
 - A virtual Controller Pak. A game that uses one gets a pak that lives on the SD
   card, whether or not a real one is plugged in. On by default for the games known
   to use one, in the port you pick, and it can be pulled out and put back from the
@@ -39,6 +41,8 @@ What it adds:
   whole paks, with the real pak backed up first.
 - Suspend and resume. Suspend a game to a slot, switch the console off, and the
   next launch of that game picks up where you left it.
+- Exit to menu. Back to the SC64 menu from inside a game, on the panel's Game page,
+  with anything still on its way to the SD card written first.
 - FreeCam. A free camera on any saved moment, or on the live game: the frozen frame
   redrawn by the console from wherever you point it, with zoom, roll, the HUD and fog
   switchable and a screenshot key; the game carries on when you leave.
@@ -46,8 +50,15 @@ What it adds:
 - Screenshots. A button of your choice writes the screen to the SD card as a PNG.
 - Configurable hotkeys, for every game or per game.
 - Homebrew too. Games built with libdragon get save states as well.
+- Favorites and history. Up to 256 favorites, moved into the order you want and added
+  straight from the file list; the last 50 games in History.
+- A reset button that restarts the game. With Reset Button set to Restart game in the
+  menu's settings, the console's reset button starts the game you're playing again,
+  save states and all, instead of going back to the menu. It works in games with Save
+  States, the virtual pak or a screenshot button on; other games go to the menu.
 - ROM autoload. Set a game to boot straight from power-on, with everything above
-  armed; hold Start while switching on to get the menu back.
+  armed; Exit to menu on the panel gets you to the menu, and holding Start while
+  switching on turns the autoload off.
 
 FreeCam controls (C-right on a state in the slot panel opens it on that state, FreeCam here on the
 panel's Game page on the live game):
@@ -70,8 +81,9 @@ panel's Game page on the live game):
 | A | Resets everything back: camera, zoom, roll, far plane |
 | B | Resumes the game from the state, as a normal load would |
 
-It needs an Expansion Pak. It is developed and tested on an original N64; I have not
-tried it on the Analogue 3D or the M64. 280 of the 298 games I've tried work:
+It needs an Expansion Pak. It is developed and tested on an original NTSC N64 with NTSC
+games; I have not tried a PAL console, the Analogue 3D or the M64. 281 of the 299 games
+I've tried work:
 [the compatibility list](docs/savestates.md#compatibility).
 
 ![A state loaded from the slot panel](docs/media/preview.gif)

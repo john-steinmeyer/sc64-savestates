@@ -1,5 +1,69 @@
 # Save states (SummerCart64 fork)
 
+## 0.3.4-ss2.0 (2026-09-29)
+
+- Save states for the 64 MiB games: Conker's Bad Fur Day, Resident Evil 2 and Pokemon
+  Stadium 2 (I tried the US versions). Their ROM fills the cartridge memory where the
+  routine, its tables and the states in use sit for every other game, so for these the
+  menu writes the routine and its tables into the SummerCart64's flash at launch, where it
+  puts the part of a bigger ROM past 64 MiB, and a save or a load streams the state between
+  the console and its file on the card while the game waits: about five seconds to save,
+  three to load. No virtual pak for them; none of the three uses a Controller Pak.
+- Pokemon Stadium 2 clears the start of memory early in its boot, where the routine's
+  entry sits. It gets a second layout, with the entry higher up and a routine on the
+  cartridge that puts the rest back; the menu applies it by itself, for every region's
+  version (the European one tried as well), and refuses Slow motion for the game. With
+  GameShark codes it boots with the codes alone: they need the placement the layout lacks.
+- Resident Evil 2 refuses Slow motion too: its cutscenes keep their data where the
+  resident routine sits.
+- A ROM hack over 64 MiB boots without save states: the part of such a ROM past 64 MiB
+  goes to the flash area the 64 MiB games' routine uses.
+- FreeCam in Conker's Bad Fur Day: the game draws with its own variant of the F3DEX2
+  display-list encoding and changes microcode partway through each frame, so the view
+  starts from the game's own record of the frame. Resident Evil 2 declines: its rooms are
+  pre-rendered pictures with the characters drawn over them.
+- A load puts back the sound chip's playback rate and its queue as the saved moment had
+  them (the 64 MiB games' states). The rate can't be read back from the chip, so the
+  routine times it for a few milliseconds as it steps in. Stadium 2 plays its battles at a
+  lower rate than its menus, and a battle loaded over a menu played too fast, with a gap
+  every frame.
+- Hotkeys in cutscenes that stream from the cartridge or read the controller only every
+  few frames (Conker's intro), in the 64 MiB games: the end of a cartridge transfer counts
+  as a moment for the routine, a hotkey stays armed when released until it fires, and a
+  held one is no longer taken as released between two reads.
+- A picture in the routine's room at the top of RAM: during a save, a load, the panel or a
+  screenshot the display goes to another of the game's own frame buffers, and back after
+  (Stadium 2's battle panel failed to open one time in three), and FreeCam draws such a
+  frame in two spare buffers of its own (Stadium 2 froze).
+- After a load, the short silence that keeps a game's sound driver ahead is queued even
+  when a long sound buffer was still playing at the check.
+- When FreeCam can't fly a moment it says NO FRAME TO FLY with Slow motion off too, at the
+  top of the picture.
+- The panel's Game page: the hint line moved below FREECAM HERE, which it half covered,
+  and Delete slot's hint reads DELETES THIS SAVE STATE.
+- Exit to menu brings the menu back in the console's own video mode. It took the game's,
+  so after a game from another region (a PAL game on an NTSC console, a US one on a PAL
+  console) the menu came up in the wrong one.
+- Favorites and history: up to 256 favorites and the last 50 games, one line a game with
+  a scroll bar, where each list held eight and a ninth favorite pushed one out. Z picks a
+  favorite up and carries it to another place; new favorites go to the end; R asks before
+  a game leaves either list; a ROM's R menu in the file list has Add to favorites. An
+  older menu keeps the first eight of each list if it saves the file.
+- Reset Button in the menu's settings: Menu, as before, or Restart game, where the
+  console's reset button starts the game that was running again through the menu, save
+  states and all. Start held on the way back up gives the menu; Exit to menu and a
+  suspend always do. The routine marks the reset (the console warns a game half a
+  second before it resets), so it works in games with Save States, the virtual pak or
+  a screenshot button on, and a power-on is never taken for one.
+- With a ROM set to autoload, Exit to menu reaches the menu; the autoload stays set for
+  power-on and the reset button.
+- A second bar under Loading ROM while a game's save-state files are checked, one by one
+  at every launch.
+- The state header: hook version 14, and 15 for the 64 MiB games, whose states carry the
+  sound chip's rate and queue (see state-format.md).
+- Compatibility: Pokemon Stadium 2 added, Conker's Bad Fur Day and Resident Evil 2 with
+  states now; 281 of the 299 games tried work.
+
 ## 0.3.4-ss1.9 (2026-09-27)
 
 - FreeCam: C-right on a state in the panel loads it and opens a free camera on that

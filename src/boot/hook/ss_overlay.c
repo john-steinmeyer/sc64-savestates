@@ -116,6 +116,14 @@ static uint32_t ov_screen_ok(const struct ov_screen *s) {
     return ((s->fb & 0x00FFFFFFu) != 0) && (s->width >= 256u) && (s->width <= 640u) && (s->vis >= 256u) &&
            (s->height >= 160u);
 }
+#if SC64SS_CARD_DIRECT
+/* the mode's check, the buffer's whole height: for the visit's display switch, whose work is a
+ * shown buffer with no line of its own clear of our home (hook.c bufsw_begin) */
+static uint32_t ov_mode_ok(const struct ov_screen *s) {
+    return ((s->fb & 0x00FFFFFFu) != 0) && (s->width >= 256u) && (s->width <= 640u) && (s->vis >= 256u) &&
+           (s->height_all >= 160u);
+}
+#endif
 
 #define OV_STASH_CART   FRAME_STASH_PI         /* the picture under the panel: cart SDRAM above the slots (hook.c) */
 static uint32_t stash_origin = 0, stash_len = 0;
@@ -123,6 +131,12 @@ static uint32_t stash_origin = 0, stash_len = 0;
 /* the displayed frame -> cart, so it can be put back later (before a save from the
  * panel: states then never contain the panel; around a load: the picture holds until
  * the restored game draws its first frame) */
+#if SC64SS_CARD_DIRECT
+static uint32_t frame_stash(void) {           /* card-direct: nowhere to stash a frame (a save from the panel keeps it) */
+    stash_len = 0;
+    return 0;
+}
+#else
 static uint32_t frame_stash(void) {
     struct ov_screen s;
     ov_screen_read(&s);
@@ -139,6 +153,7 @@ static uint32_t frame_stash(void) {
     stash_len = len;
     return 1;
 }
+#endif
 
 /* the displayed buffer's RDRAM range (start offset from 0x80000000, byte length) */
 static void ov_disp_range(uint32_t *start, uint32_t *len) {
@@ -214,7 +229,8 @@ static void ov_text(const struct ov_screen *s, uint32_t x, uint32_t y, const cha
     uint32_t sc = s->scale;
     for (; *str; str++, x += 7u * sc) {          /* the glyphs are 6 px wide */
         uint32_t c = (uint32_t)(uint8_t)*str;
-        if ((c < 32u) || (c > 126u)) c = 63u;
+        if ((c >= 97u) && (c <= 122u)) c -= 32u;    /* a..z as A..Z: the font stops at '_' (a ROM's title may have them) */
+        if ((c < 32u) || (c > 95u)) c = 63u;
         const uint8_t *g = font8x8[c - 32u];
         for (uint32_t gy = 0; gy < 8u; gy++) {
             uint32_t bits = g[gy];
@@ -312,6 +328,37 @@ static void thumb_store(uint32_t slot_base) {
     pi_dma((uint32_t)(uintptr_t)thumb_buf, slot_base + STATE_THUMB_OFF, THUMB_BYTES, 1u);
 }
 
+#if SC64SS_CARD_DIRECT
+/* card-direct: the highlighted card slot's thumbnail from its file (sd_read_head named it):
+ * the file's thumbnail sectors through the bounce, 8 KiB and then the rest */
+static void thumb_draw(const struct ov_screen *s, uint32_t slot_base, uint32_t x0, uint32_t y0) {
+    (void) slot_base;
+    const vu32 *src = (const vu32 *)(0xA0000000u | ((uint32_t)(uintptr_t)bounce_buf & 0x1FFFFFFFu));
+    uint32_t sc = s->scale;
+    if (!cd_begin(cd_thumb_slot, 0)) return;
+    for (uint32_t part = 0; part < 2u; part++) {
+        uint32_t b0 = part ? sizeof(bounce_buf) : 0u;
+        uint32_t cnt = part ? (THUMB_BYTES - sizeof(bounce_buf)) : sizeof(bounce_buf);
+        dcache_writeback_all();
+        if (!cd_xfer(STATE_THUMB_OFF / 512u + b0 / 512u, (uint32_t)(uintptr_t)bounce_buf, (cnt + 511u) / 512u, 0)) return;
+        for (uint32_t y = 0; y < THUMB_H; y++) {
+            for (uint32_t x = 0; x < THUMB_W; x += 2u) {
+                uint32_t b = (y * THUMB_W + x) * 2u;
+                if ((b < b0) || (b >= b0 + cnt)) continue;
+                uint32_t w = src[(b - b0) / 4u];
+                uint32_t p0 = w >> 16, p1 = w & 0xFFFFu;
+                uint32_t c0 = p0, c1 = p1;
+                if (s->bpp == 4u) {
+                    c0 = ((((p0 >> 11) & 31u) * 255u / 31u) << 24) | ((((p0 >> 6) & 31u) * 255u / 31u) << 16) | ((((p0 >> 1) & 31u) * 255u / 31u) << 8) | 0xFFu;
+                    c1 = ((((p1 >> 11) & 31u) * 255u / 31u) << 24) | ((((p1 >> 6) & 31u) * 255u / 31u) << 16) | ((((p1 >> 1) & 31u) * 255u / 31u) << 8) | 0xFFu;
+                }
+                ov_rect(s, x0 + x * sc, y0 + y * sc, sc, sc, c0);
+                ov_rect(s, x0 + (x + 1u) * sc, y0 + y * sc, sc, sc, c1);
+            }
+        }
+    }
+}
+#else
 /* a slot's thumbnail from cart SDRAM straight onto the screen */
 static void thumb_draw(const struct ov_screen *s, uint32_t slot_base, uint32_t x0, uint32_t y0) {
     uint32_t src = 0xA0000000u | (slot_base + STATE_THUMB_OFF);
@@ -331,6 +378,7 @@ static void thumb_draw(const struct ov_screen *s, uint32_t slot_base, uint32_t x
         }
     }
 }
+#endif
 
 /* ---- the menu ---------------------------------------------------------------------- */
 static void menu_draw_frame(const struct ov_screen *s, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h) {
@@ -407,6 +455,11 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
     frame_stash();                                /* the clean frame, put back under every save */
     uint32_t sc = s.scale;
     uint32_t x0 = 24u * sc, y0 = 20u * sc, w = s.vis - 48u * sc, h = s.height - 40u * sc;
+    /* the slot rows that fit between the title and the footer: a screen cut short by the hook's
+     * home (a buffer that reaches the top of RAM, Pokemon Stadium 2's 640x480 one) has room for
+     * five, not the eight of a whole one; the rows spilled out of the box otherwise */
+    uint32_t vrows = (h > 62u * sc) ? ((h - 48u * sc) / (14u * sc)) : 1u;
+    if (vrows > MENU_MAX_ROWS) vrows = MENU_MAX_ROWS;
     uint32_t white = ov_rgb(&s, 240, 240, 240), grey = ov_rgb(&s, 150, 150, 160), hi = ov_rgb(&s, 255, 220, 60);
     uint32_t dark = ov_rgb(&s, 16, 24, 64), red = ov_rgb(&s, 240, 80, 60);
     uint32_t tx = x0 + w - (THUMB_W + 8u) * sc, ty = y0 + 30u * sc;
@@ -449,10 +502,10 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
             card_info(cur, &cst, 0, 0);
             if (page == 0) {
                 if (cur < top) top = cur;
-                if (cur >= top + MENU_MAX_ROWS) top = cur + 1u - MENU_MAX_ROWS;
+                if (cur >= top + vrows) top = cur + 1u - vrows;
                 uint32_t empties = card_empties(n, SLX_NONE);
                 if (n == 0) ov_text(&s, x0 + 8u * sc, y0 + 30u * sc, "  SAVE STATES ARE OFF FOR THIS GAME", grey);
-                for (uint32_t i = 0; i < MENU_MAX_ROWS; i++) {
+                for (uint32_t i = 0; i < vrows; i++) {
                     uint32_t idx = top + i, st = 0, d = 0, t = 0, y = y0 + 30u * sc + i * 14u * sc;
                     char *p = line;
                     if (idx >= n) {
@@ -493,7 +546,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     ov_rect(&s, tx, ty, THUMB_W * sc, THUMB_H * sc, dark);
                     ov_text(&s, tx + 12u * sc, ty + 26u * sc, (cst & 0xFFu) ? "NO IMAGE" : "EMPTY", grey);
                 }
-                if ((30u + MENU_MAX_ROWS * 14u + 30u + 8u) * sc <= h) {   /* room under the last row */
+                if ((30u + vrows * 14u + 30u + 8u) * sc <= h) {   /* room under the last row */
                     if (confirm == 4u) {
                         ov_text(&s, x0 + 8u * sc, y0 + h - 30u * sc, "MORE AFTER A RELAUNCH FROM THE MENU", grey);
                     } else if (confirm == 6u) {
@@ -553,7 +606,8 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     ov_cat(p, "?  A YES   B NO");
                     menu_footer(&s, x0, y0, w, h, line, red);
                 } else {
-                    uint32_t hy = pak_on ? 120u : 106u;   /* the hint lines, under the last row */
+                    uint32_t hy = (pak_on ? 120u : 106u) + 14u * MENU_CAM_ROW;   /* the hint lines, under the last row (FREECAM HERE in
+                                                                                   * the viewer builds: the hint sat 6 units under it, half over its text) */
                     if (speed_div == SPEED_STEP) {
                         char hk[80], kb[40];
                         ov_cat(ov_cat(ov_cat(hk, "TAP "), combo_text(step_button(), kb)), " FOR ONE FRAME");
@@ -569,7 +623,7 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                     } else if (pak_on && (grow == 4u)) {
                         ov_text(&s, x0 + 8u * sc, y0 + hy * sc, vpak_in ? "IN: THE GAME SEES THIS PAK IN THE PORT" : "OUT: THE GAME SEES THE REAL SLOT", grey);
                     } else if (grow == gdel) {
-                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, (cst & 0xFFu) ? "THE STATE IS GONE, THE SLOT EMPTY AGAIN" : "THE SLOT IS EMPTY ALREADY", grey);
+                        ov_text(&s, x0 + 8u * sc, y0 + hy * sc, (cst & 0xFFu) ? "DELETES THIS SAVE STATE" : "THE SLOT IS EMPTY ALREADY", grey);
                     }
                     menu_footer(&s, x0, y0, w, h, ((grow == 2u) || (grow == 3u) || (grow >= gdel)) ? "A SELECT   B CLOSE   < SLOTS" : "< > CHANGE   B CLOSE   L:SLOTS", white);
                 }
@@ -701,11 +755,11 @@ static uint32_t menu_run(uint32_t cause, uint32_t mi) {
                 redraw = 1;
             }
             if (n && (pressed & 0x0008u)) {       /* C-up: a page up */
-                cur = (cur >= MENU_MAX_ROWS) ? (cur - MENU_MAX_ROWS) : 0u;
+                cur = (cur >= vrows) ? (cur - vrows) : 0u;
                 redraw = 1;
             }
             if (n && (pressed & 0x0004u)) {       /* C-down: a page down */
-                cur = ((cur + MENU_MAX_ROWS) < n) ? (cur + MENU_MAX_ROWS) : (n - 1u);
+                cur = ((cur + vrows) < n) ? (cur + vrows) : (n - 1u);
                 redraw = 1;
             }
             if (left || right) {                  /* the Game page, as L and R */
@@ -807,6 +861,38 @@ do_save:
 static uint32_t fb_drawn = 0;
 
 /* interlaced modes show one buffer from two origins a line apart: one name for both */
+/* Another whole frame buffer of the game's, clear of the hook's home, for the panel when the
+ * one on screen reaches into the home: the last buffers the VI showed (the monitor's history
+ * in the cart buffer, borrowed mode), the one on screen
+ * and anything over it left out, an interlaced field's second origin (a line into its
+ * buffer) left out for its base. 0 when there is none. */
+static uint32_t ov_other_buffer(const struct ov_screen *s) {
+    uint32_t cand[3] = {0, 0, 0}, i, j, line = s->width * s->bpp, size = line * s->height_all;
+    uint32_t shown = s->fb & 0x00FFFFFFu;
+    uint32_t d = (vi_fld_lineoff > 0) ? (uint32_t)vi_fld_lineoff : (uint32_t)(-vi_fld_lineoff);
+    if (!size) return 0;
+    {   /* the monitor's history (borrowed mode; a resident game cannot have a buffer under the hook) */
+        uint32_t magic = 0;
+        if (!borrowed_mode() || !pio_read(VIHIST_BRAM + 0xCu, &magic) || (magic != 0x56494831u)) return 0;
+        for (i = 0; i < 3u; i++) {
+            if (!pio_read(VIHIST_BRAM + 4u * i, &cand[i])) return 0;
+        }
+    }
+    for (i = 0; i < 3u; i++) {
+        uint32_t c = cand[i] & 0x00FFFFFFu;
+        if ((c < 0x1000u) || (c + size > HOOK_HOME_OFF)) continue;      /* whole, and clear of the home */
+        if ((c + size > shown) && (c < shown + size)) continue;         /* the one on screen, or over it */
+        if (d) {
+            for (j = 0; j < 3u; j++) {
+                if (((cand[j] & 0x00FFFFFFu) + d) == c) break;             /* a field's second origin: its base is listed too */
+            }
+            if (j < 3u) continue;
+        }
+        return c;
+    }
+    return 0;
+}
+
 static uint32_t fb_same_buffer(uint32_t origin) {
     if (vi_fld_lineoff && (vi_fld_seen == 3u)) {
         uint32_t d = (uint32_t)vi_fld_lineoff;
@@ -879,4 +965,22 @@ static void feedback_show(const char *text) {
     if (!hook_cfg.feedback) return;
     msg_text = text;
     msg_ticks = MSG_TICKS;
+}
+
+/* Borrowed mode: a declined FreeCam has no tick of ours after the visit to carry its message
+ * (the game resumed with nothing said, Resident Evil 2's 2D rooms), so it goes on the loaded
+ * frame here and the game is held a second to show it. */
+static void view_decline_notice(void) {
+    struct ov_screen s;
+    if (!hook_cfg.feedback) return;
+    ov_screen_read(&s);
+    if (!ov_screen_ok(&s)) return;
+    {
+        /* at the top of the picture: every mode shows its first lines, while the bottom of the
+         * height ov_screen_read guesses can lie past a short buffer (Resident Evil 2's title:
+         * 264 wide, 32-bit, scaled 0.75 in the VI; the message went unseen there) */
+        uint32_t sc = s.scale, x = 22u * sc, y = 16u * sc, t0 = c0_count();
+        ov_text(&s, x, y, "NO FRAME TO FLY", ov_rgb(&s, 255, 220, 60));   /* (no shadow line: the blob's 128 KiB are full) */
+        while ((c0_count() - t0) < (46875u * 1000u)) vi_frz_service();
+    }
 }
